@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Home Assistant config data (keep structure, exclude runtime data)
+config/.storage/
+config/*.db
+config/*.db-shm
+config/*.db-wal
+config/*.log
+config/*.log.*
+config/.HA_VERSION
+config/.ha_run.lock
+
+# Secrets
+config/secrets.yaml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Claude Code
+.claude/

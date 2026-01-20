@@ -1,0 +1,24 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Pushok Hub",
+        "description": "Enter the connection details for your Pushok Zigbee Hub.",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "use_ssl": "Use SSL",
+          "name": "Name (optional)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the hub. Please check the host and port.",
+      "invalid_auth": "Authentication failed.",
+      "unknown": "An unknown error occurred."
+    },
+    "abort": {
+      "already_configured": "This hub is already configured."
+    }
+  }
+}
