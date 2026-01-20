@@ -23,7 +23,7 @@ Home Assistant integration for Pushok Zigbee Hub.
 1. Open HACS in Home Assistant
 2. Click on "Integrations"
 3. Click the three dots menu and select "Custom repositories"
-4. Add repository URL: `https://github.com/pushok/ha-pushok-hub`
+4. Add repository URL: `https://github.com/kosyakow/ha-pushok-hub`
 5. Select category: "Integration"
 6. Click "Add"
 7. Find "Pushok Zigbee Hub" in the list and install
