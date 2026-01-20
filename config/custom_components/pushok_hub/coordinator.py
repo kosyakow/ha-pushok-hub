@@ -218,14 +218,21 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         """Handle object update broadcast.
 
         Args:
-            data: Object update data
+            data: Object update data with format:
+            {"id": "device_ieee", "type": "zigbee", "evt": "object_update", "props": {...}}
         """
-        device_id = data.get("device_id")
+        device_id = data.get("id")  # Device IEEE address
         props = data.get("props", {})
 
-        if not device_id or device_id not in self._devices:
+        if not device_id:
+            _LOGGER.debug("Broadcast without device id")
+            return
+
+        if device_id not in self._devices:
             _LOGGER.debug("Update for unknown device: %s", device_id)
             return
+
+        _LOGGER.debug("Processing update for device %s: %s", device_id, props)
 
         # Update the device description if metadata changed
         if "lqi" in props:
@@ -236,20 +243,25 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
             self._devices[device_id].warning = props["warn"]
 
         # Update state
-        current_data = self.data or {}
+        from .api.models import DeviceState, PropertyValue
+
+        current_data = dict(self.data) if self.data else {}
         current_state = current_data.get(device_id)
 
-        if current_state:
-            # Update existing state
-            from .api.models import PropertyValue
+        # Create state if it doesn't exist
+        if not current_state:
+            current_state = DeviceState(device_id=device_id, properties={})
+            current_data[device_id] = current_state
 
-            for key, value in props.items():
-                if key.isdigit() and isinstance(value, dict):
-                    field_id = int(key)
-                    current_state.properties[field_id] = PropertyValue.from_dict(value)
+        # Update properties
+        for key, value in props.items():
+            if key.isdigit() and isinstance(value, dict):
+                field_id = int(key)
+                current_state.properties[field_id] = PropertyValue.from_dict(value)
+                _LOGGER.debug("Updated field %d = %s", field_id, value.get("value"))
 
-            if "adptr-crc" in props:
-                current_state.adapter_crc = props["adptr-crc"]
+        if "adptr-crc" in props:
+            current_state.adapter_crc = props["adptr-crc"]
 
         # Notify listeners
         self.async_set_updated_data(current_data)
