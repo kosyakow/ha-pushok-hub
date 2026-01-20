@@ -36,16 +36,24 @@ async def async_setup_entry(
     entities: list[PushokHubBinarySensor] = []
 
     for device_id, device in coordinator.devices.items():
-        fmt = coordinator.formats.get(device_id)
-        if not fmt:
-            continue
-
-        for field_id, field_fmt in fmt.fields.items():
-            # Create binary sensor for boolean read-only fields
-            if field_fmt.is_bool and field_fmt.is_read_only:
-                entities.append(
-                    PushokHubBinarySensor(coordinator, device, field_id)
-                )
+        # First try to use adapter params (more complete info)
+        adapter = coordinator.get_adapter_for_device(device_id)
+        if adapter and adapter.params:
+            for param in adapter.params:
+                # Create binary sensor for boolean read-only params
+                if param.param_type == "bool" and not param.is_writable:
+                    entities.append(
+                        PushokHubBinarySensor(coordinator, device, param.address)
+                    )
+        else:
+            # Fallback to format if no adapter
+            fmt = coordinator.formats.get(device_id)
+            if fmt:
+                for field_id, field_fmt in fmt.fields.items():
+                    if field_fmt.is_bool and field_fmt.is_read_only:
+                        entities.append(
+                            PushokHubBinarySensor(coordinator, device, field_id)
+                        )
 
     async_add_entities(entities)
 

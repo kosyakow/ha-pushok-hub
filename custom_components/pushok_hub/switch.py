@@ -34,16 +34,28 @@ async def async_setup_entry(
     entities: list[PushokHubSwitch] = []
 
     for device_id, device in coordinator.devices.items():
-        fmt = coordinator.formats.get(device_id)
-        if not fmt:
-            continue
-
-        for field_id, field_fmt in fmt.fields.items():
-            # Create switch for boolean read-write fields
-            if field_fmt.is_bool and not field_fmt.is_read_only:
-                entities.append(
-                    PushokHubSwitch(coordinator, device, field_id)
-                )
+        # First try to use adapter params (more complete info)
+        adapter = coordinator.get_adapter_for_device(device_id)
+        if adapter and adapter.params:
+            for param in adapter.params:
+                # Create switch for boolean read-write params
+                if param.param_type == "bool" and param.is_writable:
+                    # Skip if this is a light device (handled by light platform)
+                    device_type = (adapter.device_type or "").lower()
+                    if any(t in device_type for t in ["light", "dimmer", "bulb"]):
+                        continue
+                    entities.append(
+                        PushokHubSwitch(coordinator, device, param.address)
+                    )
+        else:
+            # Fallback to format if no adapter
+            fmt = coordinator.formats.get(device_id)
+            if fmt:
+                for field_id, field_fmt in fmt.fields.items():
+                    if field_fmt.is_bool and not field_fmt.is_read_only:
+                        entities.append(
+                            PushokHubSwitch(coordinator, device, field_id)
+                        )
 
     async_add_entities(entities)
 

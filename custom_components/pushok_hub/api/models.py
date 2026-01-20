@@ -71,10 +71,16 @@ class DeviceAttributes:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DeviceAttributes:
         """Create DeviceAttributes from API response."""
+        # Handle case where data might not be a dict
+        if not isinstance(data, dict):
+            return cls(name=None, tags=[], params_visibility={})
+
         visibility = {}
         if "paramsVisibility" in data:
-            for k, v in data["paramsVisibility"].items():
-                visibility[int(k)] = v
+            pv = data["paramsVisibility"]
+            if isinstance(pv, dict):
+                for k, v in pv.items():
+                    visibility[int(k)] = v
 
         return cls(
             name=data.get("name"),
@@ -103,6 +109,14 @@ class DeviceState:
     def from_dict(cls, device_id: str, data: dict[str, Any]) -> DeviceState:
         """Create DeviceState from API response."""
         properties = {}
+        adapter_crc = None
+
+        # Handle case where data might not be a dict
+        if not isinstance(data, dict):
+            return cls(device_id=device_id, properties={}, adapter_crc=None)
+
+        # Make a copy to avoid modifying original
+        data = dict(data)
         adapter_crc = data.pop("adptr-crc", None)
 
         for key, value in data.items():
@@ -164,6 +178,11 @@ class DeviceFormat:
     def from_dict(cls, device_id: str, data: dict[str, Any]) -> DeviceFormat:
         """Create DeviceFormat from API response."""
         fields = {}
+
+        # Handle case where data might not be a dict
+        if not isinstance(data, dict):
+            return cls(device_id=device_id, fields={})
+
         for key, value in data.items():
             if key.isdigit() and isinstance(value, int):
                 field_id = int(key)

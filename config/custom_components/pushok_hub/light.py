@@ -7,7 +7,7 @@ from typing import Any
 
 from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
-    ATTR_COLOR_TEMP,
+    ATTR_COLOR_TEMP_KELVIN,
     ColorMode,
     LightEntity,
 )
@@ -137,12 +137,12 @@ class PushokHubLight(PushokHubEntity, LightEntity):
         if color_temp_field is not None:
             self._attr_color_mode = ColorMode.COLOR_TEMP
             self._attr_supported_color_modes = {ColorMode.COLOR_TEMP}
-            # Set min/max color temp if available
+            # Set min/max color temp in Kelvin if available
             if self._color_temp_param:
                 if self._color_temp_param.min_value:
-                    self._attr_min_mireds = int(self._color_temp_param.min_value)
+                    self._attr_min_color_temp_kelvin = int(self._color_temp_param.min_value)
                 if self._color_temp_param.max_value:
-                    self._attr_max_mireds = int(self._color_temp_param.max_value)
+                    self._attr_max_color_temp_kelvin = int(self._color_temp_param.max_value)
         elif brightness_field is not None:
             self._attr_color_mode = ColorMode.BRIGHTNESS
             self._attr_supported_color_modes = {ColorMode.BRIGHTNESS}
@@ -188,8 +188,8 @@ class PushokHubLight(PushokHubEntity, LightEntity):
         return int(value * 255 / 100)
 
     @property
-    def color_temp(self) -> int | None:
-        """Return the color temperature in mireds."""
+    def color_temp_kelvin(self) -> int | None:
+        """Return the color temperature in Kelvin."""
         if self._color_temp_field is None:
             return None
 
@@ -217,8 +217,8 @@ class PushokHubLight(PushokHubEntity, LightEntity):
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on."""
         # Handle color temperature
-        if ATTR_COLOR_TEMP in kwargs and self._color_temp_field is not None:
-            color_temp = kwargs[ATTR_COLOR_TEMP]
+        if ATTR_COLOR_TEMP_KELVIN in kwargs and self._color_temp_field is not None:
+            color_temp = kwargs[ATTR_COLOR_TEMP_KELVIN]
 
             # Apply inversion if available
             if self._color_temp_param and self._color_temp_param.convert:
