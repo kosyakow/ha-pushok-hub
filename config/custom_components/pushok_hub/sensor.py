@@ -13,7 +13,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, DATA_TYPE_FLOAT
+from .const import DOMAIN, SENSOR_DEVICE_CLASS_MAPPING
 from .coordinator import PushokHubCoordinator
 from .entity import PushokHubEntity
 
@@ -60,10 +60,33 @@ class PushokHubSensor(PushokHubEntity, SensorEntity):
 
     _attr_state_class = SensorStateClass.MEASUREMENT
 
+    def __init__(self, coordinator, device, field_id) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, device, field_id)
+
+        # Set device class based on param name
+        if self._adapter_param and self._adapter_param.name:
+            param_name = self._adapter_param.name.lower()
+            device_class_str = SENSOR_DEVICE_CLASS_MAPPING.get(param_name)
+            if device_class_str:
+                try:
+                    self._attr_device_class = SensorDeviceClass(device_class_str)
+                except ValueError:
+                    pass
+
+        # Set unit from adapter
+        unit = self._get_ha_unit()
+        if unit:
+            self._attr_native_unit_of_measurement = unit
+
     @property
     def native_value(self):
         """Return the sensor value."""
-        return self._state_value
+        value = self._state_value
+        # Round float values for display
+        if isinstance(value, float):
+            return round(value, 2)
+        return value
 
 
 class PushokHubLQISensor(PushokHubEntity, SensorEntity):

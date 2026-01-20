@@ -5,12 +5,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from homeassistant.components.switch import SwitchEntity
+from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
+from .const import DOMAIN, SWITCH_DEVICE_CLASS_MAPPING
 from .coordinator import PushokHubCoordinator
 from .entity import PushokHubEntity
 
@@ -50,6 +50,40 @@ async def async_setup_entry(
 
 class PushokHubSwitch(PushokHubEntity, SwitchEntity):
     """Switch entity for Pushok Hub."""
+
+    def __init__(self, coordinator, device, field_id) -> None:
+        """Initialize the switch."""
+        super().__init__(coordinator, device, field_id)
+
+        # Set device class based on param name or adapter device type
+        adapter = coordinator.get_adapter_for_device(device.id)
+        if adapter:
+            device_type = (adapter.device_type or "").lower()
+            if "plug" in device_type or "socket" in device_type:
+                self._attr_device_class = SwitchDeviceClass.OUTLET
+            elif "switch" in device_type:
+                self._attr_device_class = SwitchDeviceClass.SWITCH
+
+        # Try to set from param name
+        if not hasattr(self, "_attr_device_class") or self._attr_device_class is None:
+            if self._adapter_param and self._adapter_param.name:
+                param_name = self._adapter_param.name.lower()
+                device_class_str = SWITCH_DEVICE_CLASS_MAPPING.get(param_name)
+                if device_class_str:
+                    try:
+                        self._attr_device_class = SwitchDeviceClass(device_class_str)
+                    except ValueError:
+                        pass
+
+        # Set icon for common switch types
+        if self._adapter_param and self._adapter_param.name:
+            name = self._adapter_param.name.lower()
+            if "indicator" in name or "led" in name:
+                self._attr_icon = "mdi:led-on"
+            elif "child_lock" in name:
+                self._attr_icon = "mdi:lock"
+            elif "backlight" in name:
+                self._attr_icon = "mdi:lightbulb"
 
     @property
     def is_on(self) -> bool | None:

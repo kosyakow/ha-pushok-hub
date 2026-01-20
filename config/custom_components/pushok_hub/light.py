@@ -7,6 +7,7 @@ from typing import Any
 
 from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
+    ATTR_COLOR_TEMP,
     ColorMode,
     LightEntity,
 )
@@ -20,9 +21,47 @@ from .entity import PushokHubEntity
 
 _LOGGER = logging.getLogger(__name__)
 
-# Field IDs for light devices (adjust based on your driver implementation)
-FIELD_ON_OFF = 0
-FIELD_BRIGHTNESS = 1
+
+def _find_light_fields(coordinator: PushokHubCoordinator, device_id: str) -> dict | None:
+    """Find light-related fields from adapter.
+
+    Returns dict with field IDs for on_off, brightness, color_temp if found.
+    """
+    adapter = coordinator.get_adapter_for_device(device_id)
+    if not adapter:
+        return None
+
+    # Check if device type is light-related
+    device_type = (adapter.device_type or "").lower()
+    if not any(t in device_type for t in ["light", "dimmer", "bulb", "led"]):
+        return None
+
+    fields = {
+        "on_off": None,
+        "brightness": None,
+        "color_temp": None,
+    }
+
+    for param in adapter.params:
+        name = (param.name or "").lower()
+
+        # Find on/off field
+        if name in ("state", "on", "switch") and param.param_type == "bool":
+            fields["on_off"] = param.address
+
+        # Find brightness field
+        if name in ("brightness", "level", "dim") and param.param_type in ("int", "float"):
+            fields["brightness"] = param.address
+
+        # Find color temperature field
+        if name in ("color_temp", "colortemp", "color_temperature") and param.param_type in ("int", "float"):
+            fields["color_temp"] = param.address
+
+    # Must have at least on/off to be a light
+    if fields["on_off"] is None:
+        return None
+
+    return fields
 
 
 async def async_setup_entry(
@@ -42,21 +81,15 @@ async def async_setup_entry(
     entities: list[PushokHubLight] = []
 
     for device_id, device in coordinator.devices.items():
-        fmt = coordinator.formats.get(device_id)
-        if not fmt:
-            continue
-
-        # Check if device has light-like fields (on/off boolean + optional brightness)
-        has_on_off = FIELD_ON_OFF in fmt.fields and fmt.fields[FIELD_ON_OFF].is_bool
-        has_brightness = FIELD_BRIGHTNESS in fmt.fields and fmt.fields[FIELD_BRIGHTNESS].is_numeric
-
-        if has_on_off:
+        light_fields = _find_light_fields(coordinator, device_id)
+        if light_fields:
             entities.append(
                 PushokHubLight(
                     coordinator,
                     device,
-                    on_off_field=FIELD_ON_OFF,
-                    brightness_field=FIELD_BRIGHTNESS if has_brightness else None,
+                    on_off_field=light_fields["on_off"],
+                    brightness_field=light_fields["brightness"],
+                    color_temp_field=light_fields["color_temp"],
                 )
             )
 
@@ -72,6 +105,7 @@ class PushokHubLight(PushokHubEntity, LightEntity):
         device,
         on_off_field: int,
         brightness_field: int | None = None,
+        color_temp_field: int | None = None,
     ) -> None:
         """Initialize the light.
 
@@ -80,13 +114,36 @@ class PushokHubLight(PushokHubEntity, LightEntity):
             device: Device description
             on_off_field: Field ID for on/off state
             brightness_field: Field ID for brightness (optional)
+            color_temp_field: Field ID for color temperature (optional)
         """
         super().__init__(coordinator, device, on_off_field, name_suffix="Light")
 
         self._on_off_field = on_off_field
         self._brightness_field = brightness_field
+        self._color_temp_field = color_temp_field
 
-        if brightness_field is not None:
+        # Store adapter params for brightness and color temp
+        adapter = coordinator.get_adapter_for_device(device.id)
+        self._brightness_param = None
+        self._color_temp_param = None
+
+        if adapter:
+            if brightness_field is not None:
+                self._brightness_param = adapter.get_param_by_address(brightness_field)
+            if color_temp_field is not None:
+                self._color_temp_param = adapter.get_param_by_address(color_temp_field)
+
+        # Determine color modes
+        if color_temp_field is not None:
+            self._attr_color_mode = ColorMode.COLOR_TEMP
+            self._attr_supported_color_modes = {ColorMode.COLOR_TEMP}
+            # Set min/max color temp if available
+            if self._color_temp_param:
+                if self._color_temp_param.min_value:
+                    self._attr_min_mireds = int(self._color_temp_param.min_value)
+                if self._color_temp_param.max_value:
+                    self._attr_max_mireds = int(self._color_temp_param.max_value)
+        elif brightness_field is not None:
             self._attr_color_mode = ColorMode.BRIGHTNESS
             self._attr_supported_color_modes = {ColorMode.BRIGHTNESS}
         else:
@@ -103,7 +160,7 @@ class PushokHubLight(PushokHubEntity, LightEntity):
 
     @property
     def brightness(self) -> int | None:
-        """Return the brightness of the light."""
+        """Return the brightness of the light (0-255)."""
         if self._brightness_field is None:
             return None
 
@@ -118,20 +175,81 @@ class PushokHubLight(PushokHubEntity, LightEntity):
         if not prop:
             return None
 
-        # Convert 0-100 to 0-255
-        return int(prop.value * 255 / 100)
+        value = prop.value
+
+        # Apply conversion if available
+        if self._brightness_param and self._brightness_param.convert:
+            conversion = self._brightness_param.convert.get("conversion")
+            if conversion:
+                value = self._apply_conversion(value, conversion)
+
+        # Convert to 0-255 range
+        # Assume value is in 0-100 range after conversion
+        return int(value * 255 / 100)
+
+    @property
+    def color_temp(self) -> int | None:
+        """Return the color temperature in mireds."""
+        if self._color_temp_field is None:
+            return None
+
+        if not self.coordinator.data:
+            return None
+
+        state = self.coordinator.data.get(self._device.id)
+        if not state:
+            return None
+
+        prop = state.properties.get(self._color_temp_field)
+        if not prop:
+            return None
+
+        value = prop.value
+
+        # Apply conversion if available
+        if self._color_temp_param and self._color_temp_param.convert:
+            conversion = self._color_temp_param.convert.get("conversion")
+            if conversion:
+                value = self._apply_conversion(value, conversion)
+
+        return int(value)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on."""
+        # Handle color temperature
+        if ATTR_COLOR_TEMP in kwargs and self._color_temp_field is not None:
+            color_temp = kwargs[ATTR_COLOR_TEMP]
+
+            # Apply inversion if available
+            if self._color_temp_param and self._color_temp_param.convert:
+                inversion = self._color_temp_param.convert.get("inversion")
+                if inversion:
+                    color_temp = self._apply_conversion(color_temp, inversion)
+
+            await self.coordinator.async_set_device_state(
+                self._device.id,
+                self._color_temp_field,
+                int(color_temp),
+            )
+
+        # Handle brightness
         if ATTR_BRIGHTNESS in kwargs and self._brightness_field is not None:
             # Convert 0-255 to 0-100
             brightness = int(kwargs[ATTR_BRIGHTNESS] * 100 / 255)
+
+            # Apply inversion if available
+            if self._brightness_param and self._brightness_param.convert:
+                inversion = self._brightness_param.convert.get("inversion")
+                if inversion:
+                    brightness = self._apply_conversion(brightness, inversion)
+
             await self.coordinator.async_set_device_state(
                 self._device.id,
                 self._brightness_field,
-                brightness,
+                int(brightness),
             )
 
+        # Turn on
         await self._async_set_value(True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:

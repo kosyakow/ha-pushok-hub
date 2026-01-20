@@ -59,3 +59,83 @@ RECONNECT_INTERVAL: Final = 10.0
 # Storage
 STORAGE_KEY_PRIVATE_KEY: Final = "ec_private_key"
 STORAGE_KEY_USER_ID: Final = "user_id"
+
+# Unit mappings: adapter viewParams.unit -> HA native_unit_of_measurement
+UNIT_MAPPING: Final = {
+    "unit_C": "°C",
+    "unit_F": "°F",
+    "unit_%": "%",
+    "unit_voltage": "V",
+    "unit_mV": "mV",
+    "unit_power": "W",
+    "unit_mA": "mA",
+    "unit_A": "A",
+    "unit_energy": "kWh",
+    "unit_lux": "lx",
+    "unit_ppm": "ppm",
+    "unit_ppb": "ppb",
+    "unit_hPa": "hPa",
+    "unit_Pa": "Pa",
+    "unit_cm": "cm",
+    "unit_m": "m",
+    "unit_s": "s",
+    "unit_min": "min",
+    "unit_Hz": "Hz",
+    "unit_dB": "dB",
+    "unit_L": "L",
+    "unit_mL": "mL",
+    "unit_m3": "m³",
+    "unit_ugm3": "µg/m³",
+}
+
+# Sensor device class mappings: param name -> SensorDeviceClass
+SENSOR_DEVICE_CLASS_MAPPING: Final = {
+    "temperature": "temperature",
+    "temp": "temperature",
+    "humidity": "humidity",
+    "hum": "humidity",
+    "pressure": "pressure",
+    "battery": "battery",
+    "voltage": "voltage",
+    "current": "current",
+    "power": "power",
+    "energy": "energy",
+    "illuminance": "illuminance",
+    "lux": "illuminance",
+    "co2": "co2",
+    "pm25": "pm25",
+    "pm10": "pm10",
+    "voc": "volatile_organic_compounds",
+    "frequency": "frequency",
+    "signal_strength": "signal_strength",
+    "distance": "distance",
+}
+
+# Binary sensor device class mappings: param name -> BinarySensorDeviceClass
+BINARY_SENSOR_DEVICE_CLASS_MAPPING: Final = {
+    "state": "opening",
+    "contact": "opening",
+    "open": "opening",
+    "door": "door",
+    "window": "window",
+    "motion": "motion",
+    "presense": "occupancy",
+    "presence": "occupancy",
+    "occupancy": "occupancy",
+    "smoke": "smoke",
+    "gas": "gas",
+    "co": "co",
+    "water_leak": "moisture",
+    "leak": "moisture",
+    "moisture": "moisture",
+    "vibration": "vibration",
+    "tamper": "tamper",
+    "battery_low": "battery",
+    "problem": "problem",
+}
+
+# Switch device class mappings: param name -> SwitchDeviceClass
+SWITCH_DEVICE_CLASS_MAPPING: Final = {
+    "outlet": "outlet",
+    "switch": "switch",
+}
