@@ -139,3 +139,6 @@ SWITCH_DEVICE_CLASS_MAPPING: Final = {
     "outlet": "outlet",
     "switch": "switch",
 }
+
+# Maximum field ID to include in entities (fields > this are internal/service fields)
+MAX_FIELD_ID: Final = 200

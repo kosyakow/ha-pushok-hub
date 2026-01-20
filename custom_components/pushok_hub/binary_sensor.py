@@ -12,7 +12,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, BINARY_SENSOR_DEVICE_CLASS_MAPPING
+from .const import DOMAIN, BINARY_SENSOR_DEVICE_CLASS_MAPPING, MAX_FIELD_ID
 from .coordinator import PushokHubCoordinator
 from .entity import PushokHubEntity
 
@@ -40,6 +40,9 @@ async def async_setup_entry(
         adapter = coordinator.get_adapter_for_device(device_id)
         if adapter and adapter.params:
             for param in adapter.params:
+                # Skip service fields (ID > MAX_FIELD_ID)
+                if param.address > MAX_FIELD_ID:
+                    continue
                 # Create binary sensor for boolean read-only params
                 if param.param_type == "bool" and not param.is_writable:
                     entities.append(
@@ -50,6 +53,9 @@ async def async_setup_entry(
             fmt = coordinator.formats.get(device_id)
             if fmt:
                 for field_id, field_fmt in fmt.fields.items():
+                    # Skip service fields (ID > MAX_FIELD_ID)
+                    if field_id > MAX_FIELD_ID:
+                        continue
                     if field_fmt.is_bool and field_fmt.is_read_only:
                         entities.append(
                             PushokHubBinarySensor(coordinator, device, field_id)

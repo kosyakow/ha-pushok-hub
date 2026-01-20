@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -49,8 +50,8 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
             hass,
             _LOGGER,
             name=DOMAIN,
-            # No update_interval - we use push updates
-            update_interval=None,
+            # Poll every 30 seconds as fallback (hub may not send all broadcasts)
+            update_interval=timedelta(seconds=30),
         )
 
         self.config_entry = entry

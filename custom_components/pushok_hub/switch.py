@@ -10,7 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, SWITCH_DEVICE_CLASS_MAPPING
+from .const import DOMAIN, MAX_FIELD_ID, SWITCH_DEVICE_CLASS_MAPPING
 from .coordinator import PushokHubCoordinator
 from .entity import PushokHubEntity
 
@@ -38,6 +38,9 @@ async def async_setup_entry(
         adapter = coordinator.get_adapter_for_device(device_id)
         if adapter and adapter.params:
             for param in adapter.params:
+                # Skip service fields (ID > MAX_FIELD_ID)
+                if param.address > MAX_FIELD_ID:
+                    continue
                 # Create switch for boolean read-write params
                 if param.param_type == "bool" and param.is_writable:
                     # Skip if this is a light device (handled by light platform)
@@ -52,6 +55,9 @@ async def async_setup_entry(
             fmt = coordinator.formats.get(device_id)
             if fmt:
                 for field_id, field_fmt in fmt.fields.items():
+                    # Skip service fields (ID > MAX_FIELD_ID)
+                    if field_id > MAX_FIELD_ID:
+                        continue
                     if field_fmt.is_bool and not field_fmt.is_read_only:
                         entities.append(
                             PushokHubSwitch(coordinator, device, field_id)
@@ -101,6 +107,13 @@ class PushokHubSwitch(PushokHubEntity, SwitchEntity):
     def is_on(self) -> bool | None:
         """Return true if the switch is on."""
         value = self._state_value
+        _LOGGER.debug(
+            "Switch %s field %d is_on check: raw=%s, converted=%s",
+            self._device.id[:8],
+            self._field_id,
+            self._raw_state_value,
+            value,
+        )
         if value is None:
             return None
         return bool(value)

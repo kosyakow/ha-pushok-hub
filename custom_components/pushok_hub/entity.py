@@ -129,6 +129,10 @@ class PushokHubEntity(CoordinatorEntity[PushokHubCoordinator]):
         if value is None:
             return None
 
+        # Don't convert booleans - they don't need conversion
+        if isinstance(value, bool):
+            return value
+
         if not self._adapter_param or not self._adapter_param.convert:
             return value
 

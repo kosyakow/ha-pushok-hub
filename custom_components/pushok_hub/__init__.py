@@ -19,6 +19,8 @@ PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
     Platform.SWITCH,
     Platform.LIGHT,
+    Platform.NUMBER,
+    Platform.SELECT,
 ]
 
 PushokHubConfigEntry: TypeAlias = ConfigEntry

@@ -15,7 +15,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
+from .const import DOMAIN, MAX_FIELD_ID
 from .coordinator import PushokHubCoordinator
 from .entity import PushokHubEntity
 
@@ -43,6 +43,10 @@ def _find_light_fields(coordinator: PushokHubCoordinator, device_id: str) -> dic
     }
 
     for param in adapter.params:
+        # Skip service fields (ID > MAX_FIELD_ID)
+        if param.address > MAX_FIELD_ID:
+            continue
+
         name = (param.name or "").lower()
 
         # Find on/off field
