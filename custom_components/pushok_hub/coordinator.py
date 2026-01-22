@@ -170,35 +170,55 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         states: dict[str, DeviceState] = {}
 
         for device_id, device in self._devices.items():
+            _LOGGER.debug(
+                "Processing device %s: model=%s, driver=%s",
+                device_id,
+                device.model,
+                device.driver,
+            )
+
+            # Load state
             try:
                 state = await self._client.get_state(device_id)
                 states[device_id] = state
+            except Exception as e:
+                _LOGGER.warning("Failed to load state for %s: %s", device_id, e)
 
+            # Load format
+            try:
                 fmt = await self._client.get_format(device_id)
                 self._formats[device_id] = fmt
+            except Exception as e:
+                _LOGGER.warning("Failed to load format for %s: %s", device_id, e)
 
+            # Load attributes
+            try:
                 attrs = await self._client.get_attributes(device_id)
                 self._attributes[device_id] = attrs
-
-                # Load adapter if device has a driver and not already cached
-                if device.driver and device.driver not in self._adapters:
-                    try:
-                        adapter = await self._client.get_adapter(device.driver)
-                        self._adapters[device.driver] = adapter
-                        _LOGGER.debug(
-                            "Loaded adapter for driver %s: %s",
-                            device.driver,
-                            adapter.description,
-                        )
-                    except Exception as e:
-                        _LOGGER.warning(
-                            "Failed to load adapter for driver %s: %s",
-                            device.driver,
-                            e,
-                        )
-
+                _LOGGER.debug(
+                    "Loaded attributes for %s: name=%s",
+                    device_id,
+                    attrs.name,
+                )
             except Exception as e:
-                _LOGGER.warning("Failed to load device %s: %s", device_id, e)
+                _LOGGER.debug("No attributes for %s: %s", device_id, e)
+
+            # Load adapter if device has a driver and not already cached
+            if device.driver and device.driver not in self._adapters:
+                try:
+                    adapter = await self._client.get_adapter(device.driver)
+                    self._adapters[device.driver] = adapter
+                    _LOGGER.debug(
+                        "Loaded adapter for driver %s: %s",
+                        device.driver,
+                        adapter.description,
+                    )
+                except Exception as e:
+                    _LOGGER.warning(
+                        "Failed to load adapter for driver %s: %s",
+                        device.driver,
+                        e,
+                    )
 
         self.async_set_updated_data(states)
 

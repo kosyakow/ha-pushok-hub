@@ -72,11 +72,20 @@ async def async_setup_entry(
 class PushokHubSensor(PushokHubEntity, SensorEntity):
     """Sensor entity for Pushok Hub."""
 
-    _attr_state_class = SensorStateClass.MEASUREMENT
-
     def __init__(self, coordinator, device, field_id) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator, device, field_id)
+
+        # Build value to label mapping if labels exist
+        self._value_to_label: dict[int | bool, str] = {}
+        if self._adapter_param and self._adapter_param.labels:
+            for label, value in self._adapter_param.labels.items():
+                self._value_to_label[value] = label
+
+        # If has labels, this is an enum sensor (no state_class)
+        # Otherwise it's a measurement
+        if not self._value_to_label:
+            self._attr_state_class = SensorStateClass.MEASUREMENT
 
         # Set device class based on param name
         if self._adapter_param and self._adapter_param.name:
@@ -88,16 +97,23 @@ class PushokHubSensor(PushokHubEntity, SensorEntity):
                 except ValueError:
                     pass
 
-        # Set unit from adapter
-        unit = self._get_ha_unit()
-        if unit:
-            self._attr_native_unit_of_measurement = unit
+        # Set unit from adapter (only if no labels)
+        if not self._value_to_label:
+            unit = self._get_ha_unit()
+            if unit:
+                self._attr_native_unit_of_measurement = unit
 
     @property
     def native_value(self):
         """Return the sensor value."""
+        raw_value = self._raw_state_value
+
+        # If has labels, return string label
+        if self._value_to_label and raw_value in self._value_to_label:
+            return self._value_to_label[raw_value]
+
+        # Otherwise return converted numeric value
         value = self._state_value
-        # Round float values for display
         if isinstance(value, float):
             return round(value, 2)
         return value

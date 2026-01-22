@@ -39,11 +39,18 @@ async def async_setup_entry(
                 # Skip service fields (ID > MAX_FIELD_ID)
                 if param.address > MAX_FIELD_ID:
                     continue
-                # Create number for numeric read-write params with slider viewType
+                # Create number for numeric read-write params
                 if param.param_type in ("int", "float") and param.is_writable:
                     view_type = param.view_params.get("type", "")
-                    # Only create number for slider type, skip values used for lights
-                    if view_type == "slider":
+                    # Skip dropdown (handled by select platform)
+                    if view_type == "dropdown":
+                        continue
+                    # Skip if device is a light (handled by light platform)
+                    device_type = (adapter.device_type or "").lower()
+                    if any(t in device_type for t in ["light", "dimmer", "bulb"]):
+                        continue
+                    # Create number for slider or value types
+                    if view_type in ("slider", "value"):
                         entities.append(
                             PushokHubNumber(coordinator, device, param.address)
                         )

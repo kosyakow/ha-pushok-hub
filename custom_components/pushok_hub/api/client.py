@@ -410,7 +410,12 @@ class PushokHubClient:
             CMD_GET_ATTRIBUTES,
             {"id": device_id, "type": entity_type},
         )
-        return DeviceAttributes.from_dict(response.get("result", {}))
+        result = response.get("result", {})
+        # Result may be a JSON string, parse it
+        if isinstance(result, str):
+            import json
+            result = json.loads(result)
+        return DeviceAttributes.from_dict(result)
 
     async def get_format(
         self,

@@ -64,11 +64,12 @@ class PushokHubEntity(CoordinatorEntity[PushokHubCoordinator]):
     def device_info(self) -> DeviceInfo:
         """Return device information."""
         attrs = self.coordinator.attributes.get(self._device.id)
+        # Use name from hub attributes, fallback to model
         name = attrs.name if attrs and attrs.name else self._device.model
 
-        # Get device type from adapter if available
+        # Get URL from adapter if available
         adapter = self.coordinator.get_adapter_for_device(self._device.id)
-        hw_version = adapter.device_type if adapter else None
+        config_url = adapter.url if adapter else None
 
         return DeviceInfo(
             identifiers={(DOMAIN, self._device.id)},
@@ -76,7 +77,7 @@ class PushokHubEntity(CoordinatorEntity[PushokHubCoordinator]):
             manufacturer=self._device.manufacturer,
             model=self._device.model,
             sw_version=self._device.driver,
-            hw_version=hw_version,
+            configuration_url=config_url,
         )
 
     @property
