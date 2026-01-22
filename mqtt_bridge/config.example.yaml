@@ -1,0 +1,25 @@
+# Pushok Hub MQTT Bridge Configuration
+
+# Pushok Hub connection settings
+hub:
+  host: "192.168.1.151"
+  port: 3001
+  use_ssl: false
+  # Keys will be auto-generated on first run if not provided
+  # private_key: "your_private_key_hex"
+  # user_id: "your_user_id_base64"
+
+# MQTT broker settings
+mqtt:
+  host: "localhost"
+  port: 1883
+  # username: "mqtt_user"
+  # password: "mqtt_password"
+  client_id: "pushok_hub_bridge"
+  base_topic: "pushok_hub"
+  # Home Assistant MQTT discovery
+  discovery_prefix: "homeassistant"
+  discovery_enabled: true
+
+# Logging
+log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
