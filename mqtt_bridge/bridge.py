@@ -6,20 +6,24 @@ import asyncio
 import json
 import logging
 import sys
+from pathlib import Path
 from typing import Any
 
-# Add parent directory to path for importing api module
-sys.path.insert(0, str(__file__).rsplit("/", 2)[0])
+# Add parent directory to path for importing api module as package
+_root_path = Path(__file__).parent.parent
+sys.path.insert(0, str(_root_path))
 
-from custom_components.pushok_hub.api import PushokHubClient, PushokAuth
+from custom_components.pushok_hub.api.client import PushokHubClient
+from custom_components.pushok_hub.api.auth import PushokAuth
 from custom_components.pushok_hub.api.models import (
     DeviceAdapter,
     DeviceAttributes,
     DeviceDescription,
     DeviceState,
+    PropertyValue,
 )
 
-import asyncio_mqtt as aiomqtt
+import aiomqtt
 
 from .config import BridgeConfig
 
@@ -196,8 +200,6 @@ class PushokMqttBridge:
         # Update state
         state = self._states.get(device_id)
         if state:
-            from custom_components.pushok_hub.api.models import PropertyValue
-
             for key, value in props.items():
                 if key.isdigit() and isinstance(value, dict):
                     state.properties[int(key)] = PropertyValue.from_dict(value)

@@ -10,7 +10,7 @@ from typing import Any, Callable
 import websockets
 from websockets.client import WebSocketClientProtocol
 
-from ..const import (
+from .const import (
     CMD_ADD_USER,
     CMD_AUTHENTICATE,
     CMD_CHALLENGE,
