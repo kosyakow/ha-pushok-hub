@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ sys.path.insert(0, str(_root_path))
 from custom_components.pushok_hub.api.client import PushokHubClient
 from custom_components.pushok_hub.api.auth import PushokAuth
 from custom_components.pushok_hub.api.models import (
+    AdapterParam,
     DeviceAdapter,
     DeviceAttributes,
     DeviceDescription,
@@ -23,7 +25,7 @@ from custom_components.pushok_hub.api.models import (
     PropertyValue,
 )
 
-import aiomqtt
+import paho.mqtt.client as mqtt
 
 from .config import BridgeConfig
 
@@ -37,7 +39,9 @@ class PushokMqttBridge:
         """Initialize the bridge."""
         self._config = config
         self._hub_client: PushokHubClient | None = None
-        self._mqtt_client: aiomqtt.Client | None = None
+        self._mqtt_client: mqtt.Client | None = None
+        self._mqtt_connected = False
+        self._loop: asyncio.AbstractEventLoop | None = None
 
         self._devices: dict[str, DeviceDescription] = {}
         self._attributes: dict[str, DeviceAttributes] = {}
@@ -45,7 +49,6 @@ class PushokMqttBridge:
         self._states: dict[str, DeviceState] = {}
 
         self._running = False
-        self._reconnect_task: asyncio.Task | None = None
 
     @property
     def base_topic(self) -> str:
@@ -56,24 +59,29 @@ class PushokMqttBridge:
         """Start the bridge."""
         _LOGGER.info("Starting Pushok Hub MQTT Bridge")
         self._running = True
+        self._loop = asyncio.get_event_loop()
 
         # Connect to hub
         await self._connect_hub()
 
-        # Connect to MQTT and run main loop
-        await self._run_mqtt()
+        # Connect to MQTT
+        self._connect_mqtt()
+
+        # Run main loop
+        try:
+            while self._running:
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            pass
 
     async def stop(self) -> None:
         """Stop the bridge."""
         _LOGGER.info("Stopping Pushok Hub MQTT Bridge")
         self._running = False
 
-        if self._reconnect_task:
-            self._reconnect_task.cancel()
-            try:
-                await self._reconnect_task
-            except asyncio.CancelledError:
-                pass
+        if self._mqtt_client:
+            self._mqtt_client.loop_stop()
+            self._mqtt_client.disconnect()
 
         if self._hub_client:
             await self._hub_client.disconnect()
@@ -140,51 +148,108 @@ class PushokMqttBridge:
                 except Exception as e:
                     _LOGGER.warning("Failed to load adapter %s: %s", device.driver, e)
 
-    async def _run_mqtt(self) -> None:
-        """Run MQTT client loop."""
-        while self._running:
-            try:
-                async with aiomqtt.Client(
-                    hostname=self._config.mqtt.host,
-                    port=self._config.mqtt.port,
-                    username=self._config.mqtt.username,
-                    password=self._config.mqtt.password,
-                    identifier=self._config.mqtt.client_id,
-                ) as client:
-                    self._mqtt_client = client
-                    _LOGGER.info("Connected to MQTT broker at %s:%d", self._config.mqtt.host, self._config.mqtt.port)
+    def _connect_mqtt(self) -> None:
+        """Connect to MQTT broker."""
+        self._mqtt_client = mqtt.Client(
+            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+            client_id=self._config.mqtt.client_id,
+        )
 
-                    # Publish bridge state
-                    await self._publish_bridge_state("online")
+        if self._config.mqtt.username:
+            self._mqtt_client.username_pw_set(
+                self._config.mqtt.username,
+                self._config.mqtt.password,
+            )
 
-                    # Publish device list
-                    await self._publish_bridge_devices()
+        self._mqtt_client.on_connect = self._on_mqtt_connect
+        self._mqtt_client.on_disconnect = self._on_mqtt_disconnect
+        self._mqtt_client.on_message = self._on_mqtt_message
 
-                    # Publish initial states
-                    await self._publish_all_states()
+        _LOGGER.info("Connecting to MQTT broker at %s:%d",
+                     self._config.mqtt.host, self._config.mqtt.port)
 
-                    # Publish HA discovery
-                    if self._config.mqtt.discovery_enabled:
-                        await self._publish_discovery()
+        try:
+            self._mqtt_client.connect(
+                self._config.mqtt.host,
+                self._config.mqtt.port,
+                keepalive=60,
+            )
+            _LOGGER.info("MQTT connect() called successfully")
+        except Exception as e:
+            _LOGGER.error("MQTT connect() failed: %s", e)
+            return
+        self._mqtt_client.loop_start()
+        _LOGGER.info("MQTT loop_start() called")
 
-                    # Subscribe to command topics
-                    await client.subscribe(f"{self.base_topic}/+/set")
-                    await client.subscribe(f"{self.base_topic}/bridge/request/#")
+    def _on_mqtt_connect(self, client: mqtt.Client, userdata: Any,
+                         flags: Any, reason_code: Any, properties: Any = None) -> None:
+        """Handle MQTT connect."""
+        rc = reason_code.value if hasattr(reason_code, 'value') else int(reason_code)
+        if rc == 0:
+            _LOGGER.info("Connected to MQTT broker")
+            self._mqtt_connected = True
 
-                    # Process messages
-                    async for message in client.messages:
-                        await self._handle_mqtt_message(message)
+            # Subscribe to command topics
+            client.subscribe(f"{self.base_topic}/+/set")
+            client.subscribe(f"{self.base_topic}/bridge/request/#")
 
-            except aiomqtt.MqttError as e:
-                _LOGGER.error("MQTT error: %s, reconnecting in 5s", e)
-                self._mqtt_client = None
-                await asyncio.sleep(5)
+            # Schedule async initialization
+            if self._loop:
+                asyncio.run_coroutine_threadsafe(
+                    self._on_mqtt_ready(),
+                    self._loop
+                )
+        else:
+            _LOGGER.error("MQTT connection failed with code %d", rc)
+
+    def _on_mqtt_disconnect(self, client: mqtt.Client, userdata: Any,
+                            disconnect_flags: Any, reason_code: Any, properties: Any = None) -> None:
+        """Handle MQTT disconnect."""
+        self._mqtt_connected = False
+        rc = reason_code.value if hasattr(reason_code, 'value') else int(reason_code) if reason_code else 0
+        _LOGGER.warning("Disconnected from MQTT broker (rc=%d)", rc)
+
+    def _on_mqtt_message(self, client: mqtt.Client, userdata: Any,
+                         message: mqtt.MQTTMessage) -> None:
+        """Handle incoming MQTT message."""
+        topic = message.topic
+        payload = message.payload.decode() if message.payload else ""
+
+        _LOGGER.debug("MQTT message: %s = %s", topic, payload)
+
+        # Handle set commands
+        if topic.endswith("/set"):
+            friendly_name = topic.split("/")[-2]
+            if self._loop:
+                asyncio.run_coroutine_threadsafe(
+                    self._handle_set_command(friendly_name, payload),
+                    self._loop
+                )
+
+    async def _on_mqtt_ready(self) -> None:
+        """Called when MQTT is connected and ready."""
+        # Publish bridge state
+        self._publish_bridge_state("online")
+
+        # Publish device list
+        self._publish_bridge_devices()
+
+        # Publish initial states
+        self._publish_all_states()
+
+        # Publish HA discovery
+        if self._config.mqtt.discovery_enabled:
+            self._publish_discovery()
 
     def _handle_hub_broadcast(self, data: dict[str, Any]) -> None:
         """Handle broadcast message from hub."""
         evt = data.get("evt")
         if evt == "object_update":
-            asyncio.create_task(self._handle_object_update(data))
+            if self._loop:
+                asyncio.run_coroutine_threadsafe(
+                    self._handle_object_update(data),
+                    self._loop
+                )
 
     async def _handle_object_update(self, data: dict[str, Any]) -> None:
         """Handle object update from hub."""
@@ -205,19 +270,7 @@ class PushokMqttBridge:
                     state.properties[int(key)] = PropertyValue.from_dict(value)
 
         # Publish to MQTT
-        await self._publish_device_state(device)
-
-    async def _handle_mqtt_message(self, message: aiomqtt.Message) -> None:
-        """Handle incoming MQTT message."""
-        topic = str(message.topic)
-        payload = message.payload.decode() if message.payload else ""
-
-        _LOGGER.debug("MQTT message: %s = %s", topic, payload)
-
-        # Handle set commands
-        if topic.endswith("/set"):
-            friendly_name = topic.split("/")[-2]
-            await self._handle_set_command(friendly_name, payload)
+        self._publish_device_state(device)
 
     async def _handle_set_command(self, friendly_name: str, payload: str) -> None:
         """Handle set command for device."""
@@ -235,28 +288,107 @@ class PushokMqttBridge:
         adapter = self._adapters.get(device.driver) if device.driver else None
 
         for key, value in data.items():
-            field_id = self._get_field_id_by_name(adapter, key)
-            if field_id is not None:
-                _LOGGER.info("Setting %s.%s (%d) = %s", friendly_name, key, field_id, value)
+            param = self._get_param_by_name(adapter, key)
+            if param is not None:
+                # Convert label to value if needed
+                converted_value = self._convert_value_for_hub(param, value)
+                _LOGGER.info("Setting %s.%s (%d) = %s (raw: %s)",
+                           friendly_name, key, param.address, value, converted_value)
                 if self._hub_client:
-                    await self._hub_client.set_state(device.id, field_id, value)
+                    await self._hub_client.set_state(device.id, param.address, converted_value)
 
-    def _get_field_id_by_name(self, adapter: DeviceAdapter | None, name: str) -> int | None:
-        """Get field ID by parameter name."""
+    def _get_param_by_name(self, adapter: DeviceAdapter | None, name: str) -> AdapterParam | None:
+        """Get parameter by name."""
         if not adapter:
             return None
 
         param = adapter.get_param_by_name(name)
         if param:
-            return param.address
+            return param
 
         # Try lowercase
         name_lower = name.lower()
         for param in adapter.params:
             if param.name and param.name.lower() == name_lower:
-                return param.address
+                return param
 
         return None
+
+    def _convert_value_for_hub(self, param: AdapterParam, value: Any) -> Any:
+        """Convert value from MQTT format to hub format.
+
+        - Converts label strings to their numeric/bool values
+        - Applies inversion formula if defined
+        """
+        converted = value
+
+        # Convert label to raw value
+        if param.labels and isinstance(value, str):
+            if value in param.labels:
+                converted = param.labels[value]
+            else:
+                # Try case-insensitive match
+                value_lower = value.lower()
+                for label, label_value in param.labels.items():
+                    if label.lower() == value_lower:
+                        converted = label_value
+                        break
+
+        # Apply inversion formula (for writing to hub)
+        if param.convert and "inversion" in param.convert:
+            converted = self._apply_conversion(converted, param.convert["inversion"])
+
+        return converted
+
+    def _convert_value_from_hub(self, param: AdapterParam, value: Any) -> Any:
+        """Convert value from hub format to MQTT format.
+
+        - Applies conversion formula if defined
+        - Converts numeric values to label strings
+        """
+        converted = value
+
+        # Apply conversion formula (for reading from hub)
+        if param.convert and "conversion" in param.convert:
+            converted = self._apply_conversion(converted, param.convert["conversion"])
+
+        # Convert raw value to label
+        if param.labels:
+            for label, label_value in param.labels.items():
+                if label_value == converted:
+                    return label
+
+        return converted
+
+    def _apply_conversion(self, value: Any, formula: list) -> Any:
+        """Apply conversion formula to value.
+
+        Formula format: ['self', operand, operation]
+        - 'self' represents the value
+        - operand is a number
+        - operation is '+', '-', '*', '/'
+        """
+        if not formula or len(formula) < 3:
+            return value
+
+        try:
+            # formula is like ['self', 100, '*'] or ['self', 100.0, '/']
+            operand = float(formula[1])
+            operation = formula[2]
+
+            if operation == '+':
+                return value + operand
+            elif operation == '-':
+                return value - operand
+            elif operation == '*':
+                result = value * operand
+                return int(result) if isinstance(operand, int) else result
+            elif operation == '/':
+                return value / operand
+        except (TypeError, ValueError, IndexError) as e:
+            _LOGGER.warning("Failed to apply conversion %s to %s: %s", formula, value, e)
+
+        return value
 
     def _find_device_by_name(self, friendly_name: str) -> DeviceDescription | None:
         """Find device by friendly name or IEEE address."""
@@ -274,20 +406,21 @@ class PushokMqttBridge:
             return attrs.name
         return device.id
 
-    async def _publish_bridge_state(self, state: str) -> None:
+    def _publish(self, topic: str, payload: str, retain: bool = False) -> None:
+        """Publish message to MQTT."""
+        if self._mqtt_client and self._mqtt_connected:
+            self._mqtt_client.publish(topic, payload, retain=retain)
+
+    def _publish_bridge_state(self, state: str) -> None:
         """Publish bridge state."""
-        if self._mqtt_client:
-            await self._mqtt_client.publish(
-                f"{self.base_topic}/bridge/state",
-                payload=json.dumps({"state": state}),
-                retain=True,
-            )
+        self._publish(
+            f"{self.base_topic}/bridge/state",
+            json.dumps({"state": state}),
+            retain=True,
+        )
 
-    async def _publish_bridge_devices(self) -> None:
+    def _publish_bridge_devices(self) -> None:
         """Publish device list."""
-        if not self._mqtt_client:
-            return
-
         devices_list = []
         for device_id, device in self._devices.items():
             adapter = self._adapters.get(device.driver) if device.driver else None
@@ -303,22 +436,19 @@ class PushokMqttBridge:
                 } if adapter else None,
             })
 
-        await self._mqtt_client.publish(
+        self._publish(
             f"{self.base_topic}/bridge/devices",
-            payload=json.dumps(devices_list),
+            json.dumps(devices_list),
             retain=True,
         )
 
-    async def _publish_all_states(self) -> None:
+    def _publish_all_states(self) -> None:
         """Publish all device states."""
         for device_id, device in self._devices.items():
-            await self._publish_device_state(device)
+            self._publish_device_state(device)
 
-    async def _publish_device_state(self, device: DeviceDescription) -> None:
+    def _publish_device_state(self, device: DeviceDescription) -> None:
         """Publish device state to MQTT."""
-        if not self._mqtt_client:
-            return
-
         state = self._states.get(device.id)
         if not state:
             return
@@ -335,28 +465,24 @@ class PushokMqttBridge:
             # Apply conversion if available
             if adapter:
                 param = adapter.get_param_by_address(field_id)
-                if param and param.labels:
-                    # Convert numeric to label
-                    for label, label_value in param.labels.items():
-                        if label_value == value:
-                            value = label
-                            break
+                if param:
+                    value = self._convert_value_from_hub(param, value)
 
             payload[name] = value
 
         # Add device metadata
         payload["linkquality"] = device.lqi
 
-        await self._mqtt_client.publish(
+        self._publish(
             f"{self.base_topic}/{friendly_name}",
-            payload=json.dumps(payload),
+            json.dumps(payload),
             retain=True,
         )
 
         # Publish availability
-        await self._mqtt_client.publish(
+        self._publish(
             f"{self.base_topic}/{friendly_name}/availability",
-            payload="online" if not device.warning else "offline",
+            "online" if not device.warning else "offline",
             retain=True,
         )
 
@@ -368,11 +494,8 @@ class PushokMqttBridge:
                 return param.name
         return f"field_{field_id}"
 
-    async def _publish_discovery(self) -> None:
+    def _publish_discovery(self) -> None:
         """Publish Home Assistant MQTT discovery messages."""
-        if not self._mqtt_client:
-            return
-
         prefix = self._config.mqtt.discovery_prefix
 
         for device_id, device in self._devices.items():
@@ -397,39 +520,61 @@ class PushokMqttBridge:
                 if param.address > 200:  # Skip service fields
                     continue
 
-                entity_id = f"{device_id}_{param.address}"
+                entity_id = f"pushok_{device_id}_{param.address}"
                 name = param.name or f"field_{param.address}"
+
+                # Use bracket notation for names with spaces/special chars
+                value_template = f"{{{{ value_json['{name}'] }}}}"
+
+                # Create safe object_id for HA entity_id
+                safe_name = name.lower().replace(" ", "_").replace("-", "_")
+                object_id = f"{friendly_name}_{safe_name}".lower().replace(" ", "_")
 
                 config_payload = {
                     "name": name.replace("_", " ").title(),
                     "unique_id": entity_id,
+                    "object_id": object_id,
                     "state_topic": f"{self.base_topic}/{friendly_name}",
-                    "value_template": f"{{{{ value_json.{name} }}}}",
+                    "value_template": value_template,
                     "device": device_info,
                     "availability_topic": f"{self.base_topic}/{friendly_name}/availability",
                 }
 
                 # Determine component type
                 if param.param_type == "bool":
+                    # Get label values for on/off states (if defined)
+                    label_on = "on"
+                    label_off = "off"
+                    if param.labels:
+                        for label, val in param.labels.items():
+                            if val is True or val == 1:
+                                label_on = label
+                            elif val is False or val == 0:
+                                label_off = label
+
                     if param.is_writable:
                         component = "switch"
                         config_payload["command_topic"] = f"{self.base_topic}/{friendly_name}/set"
                         config_payload["payload_on"] = json.dumps({name: True})
                         config_payload["payload_off"] = json.dumps({name: False})
-                        config_payload["state_on"] = True
-                        config_payload["state_off"] = False
+                        config_payload["state_on"] = label_on
+                        config_payload["state_off"] = label_off
                     else:
                         component = "binary_sensor"
+                        config_payload["payload_on"] = label_on
+                        config_payload["payload_off"] = label_off
                 elif param.param_type in ("int", "float"):
                     if param.is_writable and param.view_params.get("type") == "dropdown":
                         component = "select"
                         config_payload["command_topic"] = f"{self.base_topic}/{friendly_name}/set"
                         config_payload["options"] = list(param.labels.keys()) if param.labels else []
-                        config_payload["command_template"] = f'{{{{"{ name }": "{{{{ value }}}}"}}}}'
+                        # Use Jinja2 string concatenation to build JSON payload
+                        config_payload["command_template"] = '{{ \'{"' + name + '": "\' ~ value ~ \'"}\' }}'
                     elif param.is_writable:
                         component = "number"
                         config_payload["command_topic"] = f"{self.base_topic}/{friendly_name}/set"
-                        config_payload["command_template"] = f'{{{{"{ name }": {{{{ value }}}}}}}}'
+                        # Use Jinja2 string concatenation to build JSON payload
+                        config_payload["command_template"] = '{{ \'{"' + name + '": \' ~ value ~ \'}\' }}'
                         if param.min_value is not None:
                             config_payload["min"] = param.min_value
                         if param.max_value is not None:
@@ -451,10 +596,6 @@ class PushokMqttBridge:
                     continue
 
                 topic = f"{prefix}/{component}/{device_id}/{param.address}/config"
-                await self._mqtt_client.publish(
-                    topic,
-                    payload=json.dumps(config_payload),
-                    retain=True,
-                )
+                self._publish(topic, json.dumps(config_payload), retain=True)
 
         _LOGGER.info("Published MQTT discovery for %d devices", len(self._devices))

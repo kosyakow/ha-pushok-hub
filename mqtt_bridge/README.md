@@ -24,11 +24,61 @@ MQTT bridge for Pushok Zigbee Hub in Zigbee2MQTT-compatible format.
 
 ## Installation
 
-### Using pip
+### Quick start
 
 ```bash
-pip install -r requirements.txt
-python -m mqtt_bridge -c config.yaml
+# 1. Create virtual environment and install dependencies
+cd mqtt_bridge
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+
+# 2. Copy config template
+cp config.example.yaml config.yaml
+
+# 3. Register on hub (first time only)
+#    Enable registration mode on your hub first!
+./run.sh --register --hub-host 192.168.1.151
+
+# 4. Edit config (set MQTT broker address)
+nano config.yaml
+
+# 5. Run
+./run.sh
+```
+
+### Two modes of operation
+
+**Registration mode** - first time setup:
+```bash
+# Enable registration on hub, then run:
+./run.sh --register --hub-host 192.168.1.151
+
+# Keys will be saved to config.yaml automatically
+```
+
+**Normal mode** - regular operation:
+```bash
+# Uses saved keys from config.yaml
+./run.sh
+
+# With custom MQTT broker
+./run.sh --mqtt-host 192.168.1.100
+```
+
+### Manual run
+
+```bash
+# From mqtt_bridge directory
+.venv/bin/python -m mqtt_bridge -c config.yaml
+
+# Registration mode
+.venv/bin/python -m mqtt_bridge --register -c config.yaml --hub-host 192.168.1.151
+
+# With CLI options
+.venv/bin/python -m mqtt_bridge -c config.yaml \
+  --mqtt-host 192.168.1.100 \
+  --mqtt-port 1883 \
+  --log-level DEBUG
 ```
 
 ### Using Docker
