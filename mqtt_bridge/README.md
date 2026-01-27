@@ -101,6 +101,7 @@ mqtt:
   host: "localhost"
   port: 1883
   base_topic: "pushok_hub"
+  device_prefix: "Hub1 "  # Optional prefix for device names
   discovery_enabled: true
 
 log_level: "INFO"
@@ -118,6 +119,7 @@ log_level: "INFO"
 - `MQTT_USERNAME` - MQTT username
 - `MQTT_PASSWORD` - MQTT password
 - `MQTT_BASE_TOPIC` - Base topic (default: pushok_hub)
+- `MQTT_DEVICE_PREFIX` - Prefix for device names (default: empty)
 - `MQTT_DISCOVERY_ENABLED` - Enable HA discovery (default: true)
 - `LOG_LEVEL` - Logging level (default: INFO)
 

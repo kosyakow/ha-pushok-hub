@@ -18,6 +18,8 @@ mqtt:
   # password: "mqtt_password"
   client_id: "pushok_hub_bridge"
   base_topic: "pushok_hub"
+  # Prefix for device names in Home Assistant (e.g., "Hub1 " -> "Hub1 Living Room")
+  # device_prefix: ""
   # Home Assistant MQTT discovery
   discovery_prefix: "homeassistant"
   discovery_enabled: true
