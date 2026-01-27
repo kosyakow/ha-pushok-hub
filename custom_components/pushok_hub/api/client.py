@@ -10,7 +10,7 @@ from typing import Any, Callable
 import websockets
 from websockets.client import WebSocketClientProtocol
 
-from .const import (
+from ..const import (
     CMD_ADD_USER,
     CMD_AUTHENTICATE,
     CMD_CHALLENGE,
@@ -82,6 +82,7 @@ class PushokHubClient:
         self._pending_commands: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self._receive_task: asyncio.Task | None = None
         self._broadcast_callback: Callable[[dict[str, Any]], None] | None = None
+        self._connection_lost_callback: Callable[[], None] | None = None
         self._connected = False
         self._authorized = False
         self._role: int = 0
@@ -110,6 +111,16 @@ class PushokHubClient:
             callback: Function to call when broadcast is received
         """
         self._broadcast_callback = callback
+
+    def set_connection_lost_callback(
+        self, callback: Callable[[], None] | None
+    ) -> None:
+        """Set callback for connection lost event.
+
+        Args:
+            callback: Function to call when connection is lost
+        """
+        self._connection_lost_callback = callback
 
     async def connect(self) -> None:
         """Connect to the hub and authenticate."""
@@ -303,12 +314,18 @@ class PushokHubClient:
 
         except websockets.ConnectionClosed:
             _LOGGER.info("WebSocket connection closed")
+            was_connected = self._connected
             self._connected = False
             self._authorized = False
+            if was_connected and self._connection_lost_callback:
+                self._connection_lost_callback()
         except Exception as e:
             _LOGGER.error("Error in receive loop: %s", e)
+            was_connected = self._connected
             self._connected = False
             self._authorized = False
+            if was_connected and self._connection_lost_callback:
+                self._connection_lost_callback()
 
     def _handle_broadcast(self, data: dict[str, Any]) -> None:
         """Handle broadcast message from hub."""

@@ -135,6 +135,7 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
             auth=auth,
         )
         self._client.set_broadcast_callback(self._handle_broadcast)
+        self._client.set_connection_lost_callback(self._handle_connection_lost)
 
         try:
             await self._client.connect()
@@ -287,6 +288,23 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         # Notify listeners
         self.async_set_updated_data(current_data)
 
+    def _handle_connection_lost(self) -> None:
+        """Handle connection lost event from client."""
+        _LOGGER.warning("Connection to hub lost, scheduling reconnect...")
+
+        # Schedule reconnect in the event loop
+        self.hass.loop.call_soon_threadsafe(self._schedule_reconnect)
+
+        # Notify listeners that connection is lost (entities will mark as unavailable)
+        self.hass.loop.call_soon_threadsafe(
+            lambda: self.async_set_updated_data(self.data)
+        )
+
+    @property
+    def available(self) -> bool:
+        """Return True if hub is connected."""
+        return self._client is not None and self._client.connected
+
     def _schedule_reconnect(self) -> None:
         """Schedule a reconnection attempt."""
         if self._reconnect_task and not self._reconnect_task.done():
@@ -310,6 +328,8 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
                     await self._client.connect()
                     await self._load_devices()
                     _LOGGER.info("Reconnected to hub")
+                    # Notify listeners that connection is restored
+                    self.async_set_updated_data(self.data)
                     break
             except Exception as e:
                 _LOGGER.warning("Reconnection failed: %s", e)
