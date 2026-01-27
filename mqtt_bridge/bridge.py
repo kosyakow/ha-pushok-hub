@@ -366,8 +366,10 @@ class PushokMqttBridge:
         Formula format: ['self', operand, operation]
         - 'self' represents the value
         - operand is a number
-        - operation is '+', '-', '*', '/'
+        - operation is '+', '-', '*', '/', '^', 'log10'
         """
+        import math
+
         if not formula or len(formula) < 3:
             return value
 
@@ -385,6 +387,10 @@ class PushokMqttBridge:
                 return int(result) if isinstance(operand, int) else result
             elif operation == '/':
                 return value / operand
+            elif operation == '^':
+                return value ** operand
+            elif operation == 'log10':
+                return math.log10(value) if value > 0 else 0
         except (TypeError, ValueError, IndexError) as e:
             _LOGGER.warning("Failed to apply conversion %s to %s: %s", formula, value, e)
 
