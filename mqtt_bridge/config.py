@@ -31,7 +31,6 @@ class MqttConfig:
     password: str | None = None
     client_id: str = "pushok_hub_bridge"
     base_topic: str = "pushok_hub"
-    device_prefix: str = ""  # Prefix for device names (e.g., "Hub1 " -> "Hub1 Living Room Sensor")
     discovery_prefix: str = "homeassistant"
     discovery_enabled: bool = True
 
@@ -73,7 +72,6 @@ class BridgeConfig:
                 password=mqtt_data.get("password"),
                 client_id=mqtt_data.get("client_id", "pushok_hub_bridge"),
                 base_topic=mqtt_data.get("base_topic", "pushok_hub"),
-                device_prefix=mqtt_data.get("device_prefix", ""),
                 discovery_prefix=mqtt_data.get("discovery_prefix", "homeassistant"),
                 discovery_enabled=mqtt_data.get("discovery_enabled", True),
             ),
@@ -98,7 +96,6 @@ class BridgeConfig:
                 password=os.getenv("MQTT_PASSWORD"),
                 client_id=os.getenv("MQTT_CLIENT_ID", "pushok_hub_bridge"),
                 base_topic=os.getenv("MQTT_BASE_TOPIC", "pushok_hub"),
-                device_prefix=os.getenv("MQTT_DEVICE_PREFIX", ""),
                 discovery_prefix=os.getenv("MQTT_DISCOVERY_PREFIX", "homeassistant"),
                 discovery_enabled=os.getenv("MQTT_DISCOVERY_ENABLED", "true").lower() == "true",
             ),

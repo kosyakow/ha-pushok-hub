@@ -395,26 +395,16 @@ class PushokMqttBridge:
         for device_id, device in self._devices.items():
             if self._get_friendly_name(device) == friendly_name:
                 return device
-            # Also try without prefix
-            if self._get_friendly_name(device, with_prefix=False) == friendly_name:
-                return device
             if device_id == friendly_name:
                 return device
         return None
 
-    def _get_friendly_name(self, device: DeviceDescription, with_prefix: bool = True) -> str:
-        """Get friendly name for device.
-
-        Args:
-            device: Device to get name for
-            with_prefix: Whether to include device_prefix from config
-        """
+    def _get_friendly_name(self, device: DeviceDescription) -> str:
+        """Get friendly name for device."""
         attrs = self._attributes.get(device.id)
-        base_name = attrs.name if attrs and attrs.name else device.id
-
-        if with_prefix and self._config.mqtt.device_prefix:
-            return f"{self._config.mqtt.device_prefix}{base_name}"
-        return base_name
+        if attrs and attrs.name:
+            return attrs.name
+        return device.id
 
     def _publish(self, topic: str, payload: str, retain: bool = False) -> None:
         """Publish message to MQTT."""
