@@ -35,18 +35,18 @@ Topics use stable `device_id` (IEEE address) instead of friendly name for reliab
 
 ```bash
 # Read device state
-mosquitto_sub -t "pushok_hub/0x00158d0001234567/#" -v
+mosquitto_sub -t "pushok_hub/00158d0001234567/#" -v
 
 # Output:
-# pushok_hub/0x00158d0001234567 {"state":"on","power":45.2,"name":"Kitchen Socket","linkquality":120}
-# pushok_hub/0x00158d0001234567/state on
-# pushok_hub/0x00158d0001234567/power 45.2
-# pushok_hub/0x00158d0001234567/name Kitchen Socket
+# pushok_hub/00158d0001234567 {"state":"on","power":45.2,"name":"Kitchen Socket","linkquality":120}
+# pushok_hub/00158d0001234567/state on
+# pushok_hub/00158d0001234567/power 45.2
+# pushok_hub/00158d0001234567/name Kitchen Socket
 
 # Send commands (all equivalent)
-mosquitto_pub -t "pushok_hub/0x00158d0001234567/set" -m '{"state": false}'
-mosquitto_pub -t "pushok_hub/0x00158d0001234567/state" -m "false"
-mosquitto_pub -t "pushok_hub/0x00158d0001234567/state/set" -m "false"
+mosquitto_pub -t "pushok_hub/00158d0001234567/set" -m '{"state": false}'
+mosquitto_pub -t "pushok_hub/00158d0001234567/state" -m "false"
+mosquitto_pub -t "pushok_hub/00158d0001234567/state/set" -m "false"
 ```
 
 ## Installation
@@ -161,7 +161,7 @@ automation:
   # Using JSON topic
   - trigger:
       platform: mqtt
-      topic: "pushok_hub/0x00158d0001234567"
+      topic: "pushok_hub/00158d0001234567"
     action:
       service: notify.mobile_app
       data:
@@ -170,7 +170,7 @@ automation:
   # Using per-property topic (simpler)
   - trigger:
       platform: mqtt
-      topic: "pushok_hub/0x00158d0001234567/temperature"
+      topic: "pushok_hub/00158d0001234567/temperature"
     action:
       service: notify.mobile_app
       data:
