@@ -48,6 +48,9 @@ class PushokMqttBridge:
         self._adapters: dict[str, DeviceAdapter] = {}
         self._states: dict[str, DeviceState] = {}
 
+        # Track last published payloads to ignore echo messages
+        self._last_published: dict[str, str] = {}
+
         self._running = False
 
     @property
@@ -190,7 +193,10 @@ class PushokMqttBridge:
             self._mqtt_connected = True
 
             # Subscribe to command topics
-            client.subscribe(f"{self.base_topic}/+/set")
+            client.subscribe(f"{self.base_topic}/+/set")        # JSON commands
+            client.subscribe(f"{self.base_topic}/+")            # Main device topic
+            client.subscribe(f"{self.base_topic}/+/+")          # Individual property topics
+            client.subscribe(f"{self.base_topic}/+/+/set")      # Individual property /set topics
             client.subscribe(f"{self.base_topic}/bridge/request/#")
 
             # Schedule async initialization
@@ -217,14 +223,74 @@ class PushokMqttBridge:
 
         _LOGGER.debug("MQTT message: %s = %s", topic, payload)
 
-        # Handle set commands
-        if topic.endswith("/set"):
-            friendly_name = topic.split("/")[-2]
+        # Skip bridge topics and availability
+        if "/bridge/" in topic or topic.endswith("/availability"):
+            return
+
+        parts = topic.split("/")
+        if len(parts) < 2 or parts[0] != self.base_topic:
+            return
+
+        # Ignore echo of our own published messages
+        if topic in self._last_published and self._last_published[topic] == payload:
+            _LOGGER.debug("Ignoring echo message on %s", topic)
+            return
+
+        # Handle JSON set commands: {base}/{device_id}/set
+        if len(parts) == 3 and parts[2] == "set":
+            device_id = parts[1]
             if self._loop:
                 asyncio.run_coroutine_threadsafe(
-                    self._handle_set_command(friendly_name, payload),
+                    self._handle_set_command(device_id, payload),
                     self._loop
                 )
+            return
+
+        # Handle individual property set: {base}/{device_id}/{property}/set
+        if len(parts) == 4 and parts[3] == "set":
+            device_id = parts[1]
+            prop_name = parts[2]
+            if self._loop:
+                asyncio.run_coroutine_threadsafe(
+                    self._handle_property_command(device_id, prop_name, payload),
+                    self._loop
+                )
+            return
+
+        # Handle individual property topic: {base}/{device_id}/{property}
+        if len(parts) == 3 and parts[2] != "set":
+            device_id = parts[1]
+            prop_name = parts[2]
+            device = self._devices.get(device_id)
+            if device:
+                adapter = self._adapters.get(device.driver) if device.driver else None
+                if adapter:
+                    param = self._get_param_by_name(adapter, prop_name)
+                    if param and param.is_writable:
+                        if self._loop:
+                            asyncio.run_coroutine_threadsafe(
+                                self._handle_property_command(device_id, prop_name, payload),
+                                self._loop
+                            )
+            return
+
+        # Handle main device topic with JSON: {base}/{device_id}
+        if len(parts) == 2:
+            device_id = parts[1]
+            device = self._devices.get(device_id)
+            if device and payload:
+                try:
+                    data = json.loads(payload)
+                    adapter = self._adapters.get(device.driver) if device.driver else None
+                    if adapter and self._has_writable_params(adapter, data):
+                        _LOGGER.debug("Processing command from main topic: %s", topic)
+                        if self._loop:
+                            asyncio.run_coroutine_threadsafe(
+                                self._handle_set_command(device_id, payload),
+                                self._loop
+                            )
+                except json.JSONDecodeError:
+                    pass
 
     async def _on_mqtt_ready(self) -> None:
         """Called when MQTT is connected and ready."""
@@ -272,11 +338,11 @@ class PushokMqttBridge:
         # Publish to MQTT
         self._publish_device_state(device)
 
-    async def _handle_set_command(self, friendly_name: str, payload: str) -> None:
-        """Handle set command for device."""
-        device = self._find_device_by_name(friendly_name)
+    async def _handle_set_command(self, device_id: str, payload: str) -> None:
+        """Handle set command for device (JSON payload with multiple properties)."""
+        device = self._devices.get(device_id)
         if not device:
-            _LOGGER.warning("Device not found: %s", friendly_name)
+            _LOGGER.warning("Device not found: %s", device_id)
             return
 
         try:
@@ -293,9 +359,67 @@ class PushokMqttBridge:
                 # Convert label to value if needed
                 converted_value = self._convert_value_for_hub(param, value)
                 _LOGGER.info("Setting %s.%s (%d) = %s (raw: %s)",
-                           friendly_name, key, param.address, value, converted_value)
+                           device_id, key, param.address, value, converted_value)
                 if self._hub_client:
                     await self._hub_client.set_state(device.id, param.address, converted_value)
+
+    async def _handle_property_command(self, device_id: str, prop_name: str, payload: str) -> None:
+        """Handle command for individual property topic."""
+        device = self._devices.get(device_id)
+        if not device:
+            _LOGGER.warning("Device not found: %s", device_id)
+            return
+
+        adapter = self._adapters.get(device.driver) if device.driver else None
+        param = self._get_param_by_name(adapter, prop_name)
+
+        if not param:
+            _LOGGER.warning("Property not found: %s.%s", device_id, prop_name)
+            return
+
+        if not param.is_writable:
+            _LOGGER.debug("Property %s.%s is read-only", device_id, prop_name)
+            return
+
+        # Parse value from payload
+        value = self._parse_property_value(payload, param)
+        converted_value = self._convert_value_for_hub(param, value)
+
+        _LOGGER.info("Setting %s.%s (%d) = %s (raw: %s)",
+                     device_id, prop_name, param.address, value, converted_value)
+
+        if self._hub_client:
+            await self._hub_client.set_state(device.id, param.address, converted_value)
+
+    def _parse_property_value(self, payload: str, param: AdapterParam) -> Any:
+        """Parse property value from string payload."""
+        # Try JSON first
+        try:
+            return json.loads(payload)
+        except json.JSONDecodeError:
+            pass
+
+        # Handle boolean strings
+        payload_lower = payload.lower().strip()
+        if payload_lower in ("true", "on", "1"):
+            return True
+        if payload_lower in ("false", "off", "0"):
+            return False
+
+        # Try numeric
+        if param.param_type == "int":
+            try:
+                return int(payload)
+            except ValueError:
+                pass
+        elif param.param_type == "float":
+            try:
+                return float(payload)
+            except ValueError:
+                pass
+
+        # Return as string (for labels)
+        return payload
 
     def _get_param_by_name(self, adapter: DeviceAdapter | None, name: str) -> AdapterParam | None:
         """Get parameter by name."""
@@ -396,14 +520,13 @@ class PushokMqttBridge:
 
         return value
 
-    def _find_device_by_name(self, friendly_name: str) -> DeviceDescription | None:
-        """Find device by friendly name or IEEE address."""
-        for device_id, device in self._devices.items():
-            if self._get_friendly_name(device) == friendly_name:
-                return device
-            if device_id == friendly_name:
-                return device
-        return None
+    def _has_writable_params(self, adapter: DeviceAdapter, data: dict[str, Any]) -> bool:
+        """Check if data contains any writable parameters."""
+        for key in data.keys():
+            param = self._get_param_by_name(adapter, key)
+            if param and param.is_writable:
+                return True
+        return False
 
     def _get_friendly_name(self, device: DeviceDescription) -> str:
         """Get friendly name for device."""
@@ -461,6 +584,7 @@ class PushokMqttBridge:
 
         adapter = self._adapters.get(device.driver) if device.driver else None
         friendly_name = self._get_friendly_name(device)
+        device_id = device.id
 
         # Build state payload
         payload = {}
@@ -477,17 +601,28 @@ class PushokMqttBridge:
             payload[name] = value
 
         # Add device metadata
+        payload["name"] = friendly_name
         payload["linkquality"] = device.lqi
 
-        self._publish(
-            f"{self.base_topic}/{friendly_name}",
-            json.dumps(payload),
-            retain=True,
-        )
+        # Use device_id in topic (more stable than friendly_name)
+        topic = f"{self.base_topic}/{device_id}"
+        payload_str = json.dumps(payload)
+
+        # Store for echo detection before publishing
+        self._last_published[topic] = payload_str
+
+        self._publish(topic, payload_str, retain=True)
+
+        # Publish each property to separate topic
+        for prop_name, prop_value in payload.items():
+            prop_topic = f"{self.base_topic}/{device_id}/{prop_name}"
+            prop_payload = str(prop_value) if not isinstance(prop_value, str) else prop_value
+            self._last_published[prop_topic] = prop_payload
+            self._publish(prop_topic, prop_payload, retain=True)
 
         # Publish availability
         self._publish(
-            f"{self.base_topic}/{friendly_name}/availability",
+            f"{self.base_topic}/{device_id}/availability",
             "online" if not device.warning else "offline",
             retain=True,
         )
@@ -529,21 +664,21 @@ class PushokMqttBridge:
                 entity_id = f"pushok_{device_id}_{param.address}"
                 name = param.name or f"field_{param.address}"
 
-                # Use bracket notation for names with spaces/special chars
-                value_template = f"{{{{ value_json['{name}'] }}}}"
-
                 # Create safe object_id for HA entity_id
                 safe_name = name.lower().replace(" ", "_").replace("-", "_")
                 object_id = f"{friendly_name}_{safe_name}".lower().replace(" ", "_")
+
+                # Use device_id in topics (more stable than friendly_name)
+                prop_state_topic = f"{self.base_topic}/{device_id}/{name}"
+                prop_command_topic = f"{self.base_topic}/{device_id}/{name}/set"
 
                 config_payload = {
                     "name": name.replace("_", " ").title(),
                     "unique_id": entity_id,
                     "object_id": object_id,
-                    "state_topic": f"{self.base_topic}/{friendly_name}",
-                    "value_template": value_template,
+                    "state_topic": prop_state_topic,
                     "device": device_info,
-                    "availability_topic": f"{self.base_topic}/{friendly_name}/availability",
+                    "availability_topic": f"{self.base_topic}/{device_id}/availability",
                 }
 
                 # Determine component type
@@ -560,9 +695,9 @@ class PushokMqttBridge:
 
                     if param.is_writable:
                         component = "switch"
-                        config_payload["command_topic"] = f"{self.base_topic}/{friendly_name}/set"
-                        config_payload["payload_on"] = json.dumps({name: True})
-                        config_payload["payload_off"] = json.dumps({name: False})
+                        config_payload["command_topic"] = prop_command_topic
+                        config_payload["payload_on"] = "true"
+                        config_payload["payload_off"] = "false"
                         config_payload["state_on"] = label_on
                         config_payload["state_off"] = label_off
                     else:
@@ -572,15 +707,11 @@ class PushokMqttBridge:
                 elif param.param_type in ("int", "float"):
                     if param.is_writable and param.view_params.get("type") == "dropdown":
                         component = "select"
-                        config_payload["command_topic"] = f"{self.base_topic}/{friendly_name}/set"
+                        config_payload["command_topic"] = prop_command_topic
                         config_payload["options"] = list(param.labels.keys()) if param.labels else []
-                        # Use Jinja2 string concatenation to build JSON payload
-                        config_payload["command_template"] = '{{ \'{"' + name + '": "\' ~ value ~ \'"}\' }}'
                     elif param.is_writable:
                         component = "number"
-                        config_payload["command_topic"] = f"{self.base_topic}/{friendly_name}/set"
-                        # Use Jinja2 string concatenation to build JSON payload
-                        config_payload["command_template"] = '{{ \'{"' + name + '": \' ~ value ~ \'}\' }}'
+                        config_payload["command_topic"] = prop_command_topic
                         if param.min_value is not None:
                             config_payload["min"] = param.min_value
                         if param.max_value is not None:
