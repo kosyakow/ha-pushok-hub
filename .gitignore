@@ -26,6 +26,7 @@ secrets.yaml
 
 # Claude Code
 .claude/
+CLAUDE.md
 
 # Test files
 test_*.py
