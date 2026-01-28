@@ -18,6 +18,7 @@ Topics use stable `device_id` (IEEE address) instead of friendly name for reliab
 ### State topics
 - `pushok_hub/{device_id}` - Device state (JSON with all properties)
 - `pushok_hub/{device_id}/{property}` - Individual property value
+- `pushok_hub/{device_id}/{property}/ack` - Delivery confirmation (true/false)
 - `pushok_hub/{device_id}/name` - Device friendly name
 - `pushok_hub/{device_id}/availability` - Device availability (online/offline)
 
@@ -40,7 +41,9 @@ mosquitto_sub -t "pushok_hub/00158d0001234567/#" -v
 # Output:
 # pushok_hub/00158d0001234567 {"state":"on","power":45.2,"name":"Kitchen Socket","linkquality":120}
 # pushok_hub/00158d0001234567/state on
+# pushok_hub/00158d0001234567/state/ack true
 # pushok_hub/00158d0001234567/power 45.2
+# pushok_hub/00158d0001234567/power/ack true
 # pushok_hub/00158d0001234567/name Kitchen Socket
 
 # Send commands (all equivalent)
@@ -183,3 +186,11 @@ The bridge automatically handles connection loss:
 - Publishes `offline` status when hub connection is lost
 - Attempts to reconnect every 10 seconds
 - Republishes all states and discovery after reconnection
+
+## Delivery confirmation (ack)
+
+Each property has an `/ack` topic indicating delivery status:
+- `true` - value confirmed by the Zigbee device
+- `false` - value set but not yet confirmed
+
+This is useful for detecting unreliable devices or network issues.

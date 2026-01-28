@@ -663,8 +663,10 @@ class PushokMqttBridge:
         friendly_name = self._get_friendly_name(device)
         device_id = device.id
 
-        # Build state payload
+        # Build state payload and collect ack statuses
         payload = {}
+        ack_statuses: dict[str, bool] = {}
+
         for field_id, prop in state.properties.items():
             name = self._get_param_name(adapter, field_id)
             value = prop.value
@@ -676,6 +678,7 @@ class PushokMqttBridge:
                     value = self._convert_value_from_hub(param, value)
 
             payload[name] = value
+            ack_statuses[name] = prop.ack
 
         # Add device metadata
         payload["name"] = friendly_name
@@ -696,6 +699,12 @@ class PushokMqttBridge:
             prop_payload = str(prop_value) if not isinstance(prop_value, str) else prop_value
             self._last_published[prop_topic] = prop_payload
             self._publish(prop_topic, prop_payload, retain=True)
+
+        # Publish ack status for each property
+        for prop_name, ack_value in ack_statuses.items():
+            ack_topic = f"{self.base_topic}/{device_id}/{prop_name}/ack"
+            ack_payload = "true" if ack_value else "false"
+            self._publish(ack_topic, ack_payload, retain=True)
 
         # Publish availability
         self._publish(
