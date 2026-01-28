@@ -5,22 +5,49 @@ MQTT bridge for Pushok Zigbee Hub in Zigbee2MQTT-compatible format.
 ## Features
 
 - Publishes device states to MQTT in Zigbee2MQTT format
-- Accepts commands via MQTT
+- Per-property topics for simple integrations
+- Multiple command formats supported
 - Home Assistant MQTT auto-discovery support
 - Supports all device types (sensors, switches, numbers, selects)
+- Automatic reconnection on hub connection loss
 
 ## MQTT Topics
 
-### State topics
-- `pushok_hub/{friendly_name}` - Device state (JSON)
-- `pushok_hub/{friendly_name}/availability` - Device availability (online/offline)
+Topics use stable `device_id` (IEEE address) instead of friendly name for reliability.
 
-### Command topics
-- `pushok_hub/{friendly_name}/set` - Set device state (JSON)
+### State topics
+- `pushok_hub/{device_id}` - Device state (JSON with all properties)
+- `pushok_hub/{device_id}/{property}` - Individual property value
+- `pushok_hub/{device_id}/name` - Device friendly name
+- `pushok_hub/{device_id}/availability` - Device availability (online/offline)
+
+### Command topics (all formats supported)
+- `pushok_hub/{device_id}/set` - JSON command `{"state": true}`
+- `pushok_hub/{device_id}` - JSON command (same format)
+- `pushok_hub/{device_id}/{property}` - Direct value `true`
+- `pushok_hub/{device_id}/{property}/set` - Direct value `true`
 
 ### Bridge topics
-- `pushok_hub/bridge/state` - Bridge state
+- `pushok_hub/bridge/state` - Bridge state (online/offline)
 - `pushok_hub/bridge/devices` - Device list
+
+### Example
+
+```bash
+# Read device state
+mosquitto_sub -t "pushok_hub/0x00158d0001234567/#" -v
+
+# Output:
+# pushok_hub/0x00158d0001234567 {"state":"on","power":45.2,"name":"Kitchen Socket","linkquality":120}
+# pushok_hub/0x00158d0001234567/state on
+# pushok_hub/0x00158d0001234567/power 45.2
+# pushok_hub/0x00158d0001234567/name Kitchen Socket
+
+# Send commands (all equivalent)
+mosquitto_pub -t "pushok_hub/0x00158d0001234567/set" -m '{"state": false}'
+mosquitto_pub -t "pushok_hub/0x00158d0001234567/state" -m "false"
+mosquitto_pub -t "pushok_hub/0x00158d0001234567/state/set" -m "false"
+```
 
 ## Installation
 
@@ -131,11 +158,28 @@ Or use in your automations:
 
 ```yaml
 automation:
+  # Using JSON topic
   - trigger:
       platform: mqtt
-      topic: "pushok_hub/Living Room Sensor"
+      topic: "pushok_hub/0x00158d0001234567"
     action:
       service: notify.mobile_app
       data:
         message: "Temperature: {{ trigger.payload_json.temperature }}°C"
+
+  # Using per-property topic (simpler)
+  - trigger:
+      platform: mqtt
+      topic: "pushok_hub/0x00158d0001234567/temperature"
+    action:
+      service: notify.mobile_app
+      data:
+        message: "Temperature: {{ trigger.payload }}°C"
 ```
+
+## Connection handling
+
+The bridge automatically handles connection loss:
+- Publishes `offline` status when hub connection is lost
+- Attempts to reconnect every 10 seconds
+- Republishes all states and discovery after reconnection
