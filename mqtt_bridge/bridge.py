@@ -51,6 +51,11 @@ class PushokMqttBridge:
         # Track last published payloads to ignore echo messages
         self._last_published: dict[str, str] = {}
 
+        # Connection state
+        self._hub_connected = False
+        self._reconnect_task: asyncio.Task | None = None
+        self._reconnect_interval = 10  # seconds
+
         self._running = False
 
     @property
@@ -82,6 +87,17 @@ class PushokMqttBridge:
         _LOGGER.info("Stopping Pushok Hub MQTT Bridge")
         self._running = False
 
+        # Cancel reconnect task
+        if self._reconnect_task and not self._reconnect_task.done():
+            self._reconnect_task.cancel()
+            try:
+                await self._reconnect_task
+            except asyncio.CancelledError:
+                pass
+
+        # Publish offline status before disconnecting
+        self._publish_offline_status()
+
         if self._mqtt_client:
             self._mqtt_client.loop_stop()
             self._mqtt_client.disconnect()
@@ -109,8 +125,10 @@ class PushokMqttBridge:
             auth=auth,
         )
         self._hub_client.set_broadcast_callback(self._handle_hub_broadcast)
+        self._hub_client.set_connection_lost_callback(self._handle_hub_connection_lost)
 
         await self._hub_client.connect()
+        self._hub_connected = True
         _LOGGER.info("Connected to Pushok Hub at %s:%d", self._config.hub.host, self._config.hub.port)
 
         # Load devices
@@ -150,6 +168,65 @@ class PushokMqttBridge:
                     _LOGGER.debug("Loaded adapter %s", device.driver)
                 except Exception as e:
                     _LOGGER.warning("Failed to load adapter %s: %s", device.driver, e)
+
+    def _handle_hub_connection_lost(self) -> None:
+        """Handle connection lost event from hub client."""
+        self._hub_connected = False
+        _LOGGER.warning("Connection to hub lost")
+
+        # Publish offline status
+        if self._loop:
+            self._loop.call_soon_threadsafe(self._publish_offline_status)
+            self._loop.call_soon_threadsafe(self._schedule_reconnect)
+
+    def _publish_offline_status(self) -> None:
+        """Publish offline status for bridge and all devices."""
+        # Bridge state
+        self._publish_bridge_state("offline")
+
+        # All devices unavailable
+        for device_id in self._devices:
+            self._publish(
+                f"{self.base_topic}/{device_id}/availability",
+                "offline",
+                retain=True,
+            )
+
+    def _schedule_reconnect(self) -> None:
+        """Schedule a reconnection attempt."""
+        if self._reconnect_task and not self._reconnect_task.done():
+            return
+
+        if self._loop:
+            self._reconnect_task = self._loop.create_task(self._reconnect_loop())
+
+    async def _reconnect_loop(self) -> None:
+        """Attempt to reconnect to the hub."""
+        while self._running and not self._hub_connected:
+            await asyncio.sleep(self._reconnect_interval)
+
+            if self._hub_connected:
+                break
+
+            _LOGGER.info("Attempting to reconnect to hub...")
+
+            try:
+                if self._hub_client:
+                    await self._hub_client.connect()
+                    self._hub_connected = True
+                    _LOGGER.info("Reconnected to hub")
+
+                    # Reload devices and publish online status
+                    await self._load_devices()
+                    self._publish_bridge_state("online")
+                    self._publish_all_states()
+
+                    if self._config.mqtt.discovery_enabled:
+                        self._publish_discovery()
+
+                    break
+            except Exception as e:
+                _LOGGER.warning("Reconnect failed: %s, retrying in %ds...", e, self._reconnect_interval)
 
     def _connect_mqtt(self) -> None:
         """Connect to MQTT broker."""
