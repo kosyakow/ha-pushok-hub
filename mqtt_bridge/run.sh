@@ -54,5 +54,5 @@ fi
 
 # Run the bridge
 cd "$PROJECT_ROOT"
-export PYTHONPATH="${PROJECT_ROOT}:${PROJECT_ROOT}/custom_components/pushok_hub:${PYTHONPATH:-}"
+export PYTHONPATH="${PROJECT_ROOT}:${PROJECT_ROOT}/custom_components:${PYTHONPATH:-}"
 exec "$PYTHON" -m mqtt_bridge -c "$CONFIG_FILE" "$@"

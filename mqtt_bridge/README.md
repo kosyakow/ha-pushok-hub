@@ -18,7 +18,7 @@ Topics use stable `device_id` (IEEE address) instead of friendly name for reliab
 ### State topics
 - `pushok_hub/{device_id}` - Device state (JSON with all properties)
 - `pushok_hub/{device_id}/{property}` - Individual property value
-- `pushok_hub/{device_id}/{property}/ack` - Delivery confirmation (true/false)
+- `pushok_hub/{device_id}/ack/{property}` - Delivery confirmation (true/false)
 - `pushok_hub/{device_id}/name` - Device friendly name
 - `pushok_hub/{device_id}/availability` - Device availability (online/offline)
 
@@ -41,9 +41,9 @@ mosquitto_sub -t "pushok_hub/00158d0001234567/#" -v
 # Output:
 # pushok_hub/00158d0001234567 {"state":"on","power":45.2,"name":"Kitchen Socket","linkquality":120}
 # pushok_hub/00158d0001234567/state on
-# pushok_hub/00158d0001234567/state/ack true
+# pushok_hub/00158d0001234567/ack/state true
 # pushok_hub/00158d0001234567/power 45.2
-# pushok_hub/00158d0001234567/power/ack true
+# pushok_hub/00158d0001234567/ack/power true
 # pushok_hub/00158d0001234567/name Kitchen Socket
 
 # Send commands (all equivalent)
@@ -67,9 +67,10 @@ cp config.example.yaml config.yaml
 
 # 3. Register on hub (first time only)
 #    Enable registration mode on your hub first!
+#    Hub address and keys will be saved to config.yaml automatically
 ./run.sh --register --hub-host 192.168.1.151
 
-# 4. Edit config (set MQTT broker address)
+# 4. (Optional) Edit config if you need custom MQTT broker
 nano config.yaml
 
 # 5. Run
@@ -83,7 +84,7 @@ nano config.yaml
 # Enable registration on hub, then run:
 ./run.sh --register --hub-host 192.168.1.151
 
-# Keys will be saved to config.yaml automatically
+# Hub address and keys will be saved to config.yaml automatically
 ```
 
 **Normal mode** - regular operation:
@@ -123,8 +124,10 @@ docker-compose up -d
 
 ```yaml
 hub:
-  host: "192.168.1.151"
-  port: 3001
+  host: "192.168.1.151"    # auto-saved after --register
+  port: 3001               # auto-saved after --register
+  private_key: "..."       # auto-saved after --register
+  user_id: "..."           # auto-saved after --register
   use_ssl: false
 
 mqtt:
@@ -189,7 +192,10 @@ The bridge automatically handles connection loss:
 
 ## Delivery confirmation (ack)
 
-Each property has an `/ack` topic indicating delivery status:
+Each property has a corresponding topic under `/ack/` indicating delivery status:
+- `pushok_hub/{device_id}/ack/{property}` - `true` or `false`
+
+Values:
 - `true` - value confirmed by the Zigbee device
 - `false` - value set but not yet confirmed
 

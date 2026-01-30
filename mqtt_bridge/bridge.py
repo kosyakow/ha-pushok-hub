@@ -702,7 +702,7 @@ class PushokMqttBridge:
 
         # Publish ack status for each property
         for prop_name, ack_value in ack_statuses.items():
-            ack_topic = f"{self.base_topic}/{device_id}/{prop_name}/ack"
+            ack_topic = f"{self.base_topic}/{device_id}/ack/{prop_name}"
             ack_payload = "true" if ack_value else "false"
             self._publish(ack_topic, ack_payload, retain=True)
 

@@ -14,10 +14,10 @@ import yaml
 # Auto-configure path for API module
 _this_dir = Path(__file__).parent.resolve()
 _project_root = _this_dir.parent
-_api_path = _project_root / "custom_components" / "pushok_hub"
+_components_path = _project_root / "custom_components"
 
 # Add paths if not already present
-for path in [str(_project_root), str(_api_path)]:
+for path in [str(_project_root), str(_components_path)]:
     if path not in sys.path:
         sys.path.insert(0, path)
 
@@ -36,8 +36,14 @@ def setup_logging(level: str) -> None:
     )
 
 
-def save_keys_to_config(config_path: str, private_key: str, user_id: str) -> None:
-    """Save authentication keys to config file."""
+def save_keys_to_config(
+    config_path: str,
+    private_key: str,
+    user_id: str,
+    host: str | None = None,
+    port: int | None = None,
+) -> None:
+    """Save authentication keys and hub address to config file."""
     path = Path(config_path)
 
     if path.exists():
@@ -51,6 +57,10 @@ def save_keys_to_config(config_path: str, private_key: str, user_id: str) -> Non
 
     data["hub"]["private_key"] = private_key
     data["hub"]["user_id"] = user_id
+    if host:
+        data["hub"]["host"] = host
+    if port:
+        data["hub"]["port"] = port
 
     with open(path, "w") as f:
         yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
@@ -60,8 +70,8 @@ def save_keys_to_config(config_path: str, private_key: str, user_id: str) -> Non
 
 async def register_on_hub(config: BridgeConfig, config_path: str | None) -> bool:
     """Register on hub and save keys."""
-    from api.auth import PushokAuth
-    from api.client import PushokHubClient
+    from pushok_hub.api.auth import PushokAuth
+    from pushok_hub.api.client import PushokHubClient
 
     print("\n" + "=" * 50)
     print("REGISTRATION MODE")
@@ -90,11 +100,19 @@ async def register_on_hub(config: BridgeConfig, config_path: str | None) -> bool
 
         # Save to config if path provided
         if config_path:
-            save_keys_to_config(config_path, auth.private_key_hex, auth.user_id_b64)
+            save_keys_to_config(
+                config_path,
+                auth.private_key_hex,
+                auth.user_id_b64,
+                host=config.hub.host,
+                port=config.hub.port,
+            )
             print(f"\n[OK] Keys saved to {config_path}")
         else:
             print("\nAdd these to your config.yaml:")
             print("hub:")
+            print(f'  host: "{config.hub.host}"')
+            print(f'  port: {config.hub.port}')
             print(f'  private_key: "{auth.private_key_hex}"')
             print(f'  user_id: "{auth.user_id_b64}"')
 
