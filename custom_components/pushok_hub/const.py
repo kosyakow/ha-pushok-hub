@@ -8,11 +8,17 @@ DOMAIN: Final = "pushok_hub"
 CONF_HOST: Final = "host"
 CONF_PORT: Final = "port"
 CONF_USE_SSL: Final = "use_ssl"
+CONF_REMOTE_MODE: Final = "remote_mode"
+CONF_HUB_ID: Final = "hub_id"
 
 # Defaults
 DEFAULT_PORT: Final = 3001
 DEFAULT_PORT_SSL: Final = 443
 DEFAULT_USE_SSL: Final = False
+
+# Remote gateway settings
+REMOTE_GATEWAY_HOST: Final = "iotgate.pushok.net"
+REMOTE_GATEWAY_PORT: Final = 443
 
 # API Commands
 CMD_PUB_KEY: Final = "pubKey"

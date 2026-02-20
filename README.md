@@ -2,11 +2,14 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 
+[Русская версия](README.ru.md)
+
 Home Assistant integration for Pushok Zigbee Hub.
 
 ## Features
 
-- Local push-based communication via WebSocket
+- Local and remote connection support
+- Push-based communication via WebSocket
 - Automatic device discovery
 - Support for various Zigbee devices:
   - Switches and smart plugs
@@ -37,10 +40,25 @@ Home Assistant integration for Pushok Zigbee Hub.
 
 ## Configuration
 
+### Initial Setup
+
 1. Go to Settings → Devices & Services
 2. Click "Add Integration"
 3. Search for "Pushok Zigbee Hub"
-4. Enter your hub's IP address and port
+4. Enter your hub's IP address and port (hub must be in pairing mode for first-time setup)
+5. The integration will register with the hub and save authentication keys
+
+### Switching to Remote Connection
+
+After initial local setup, you can switch to remote connection (via cloud gateway):
+
+1. Go to Settings → Devices & Services
+2. Find "Pushok Zigbee Hub" and click on it
+3. Click the three dots menu → "Reconfigure"
+4. Select "Remote (via cloud)" connection type
+5. Enter your Hub ID
+
+This allows you to access your hub from anywhere without exposing it to the internet. Authentication keys are preserved when switching connection types.
 
 ## Supported Devices
 

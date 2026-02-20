@@ -62,6 +62,7 @@ class PushokHubClient:
         host: str,
         port: int = 3001,
         use_ssl: bool = False,
+        path: str = "",
         auth: PushokAuth | None = None,
     ) -> None:
         """Initialize the client.
@@ -70,11 +71,13 @@ class PushokHubClient:
             host: Hub hostname or IP address
             port: WebSocket port (default 3001 for local, 443 for SSL)
             use_ssl: Use secure WebSocket (wss://)
+            path: URL path (e.g., "/<hub_id>/client" for remote connection)
             auth: Authentication handler (optional, will create if not provided)
         """
         self._host = host
         self._port = port
         self._use_ssl = use_ssl
+        self._path = path
         self._auth = auth or PushokAuth()
 
         self._ws: WebSocketClientProtocol | None = None
@@ -125,7 +128,7 @@ class PushokHubClient:
     async def connect(self) -> None:
         """Connect to the hub and authenticate."""
         scheme = "wss" if self._use_ssl else "ws"
-        uri = f"{scheme}://{self._host}:{self._port}"
+        uri = f"{scheme}://{self._host}:{self._port}{self._path}"
 
         _LOGGER.debug("Connecting to %s", uri)
 

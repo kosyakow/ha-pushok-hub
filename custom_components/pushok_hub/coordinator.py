@@ -18,6 +18,8 @@ from .const import (
     CONF_HOST,
     CONF_PORT,
     CONF_USE_SSL,
+    CONF_REMOTE_MODE,
+    CONF_HUB_ID,
     DEFAULT_PORT,
     DEFAULT_USE_SSL,
     ENTITY_TYPE_ZIGBEE,
@@ -110,6 +112,11 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         host = self.config_entry.data[CONF_HOST]
         port = self.config_entry.data.get(CONF_PORT, DEFAULT_PORT)
         use_ssl = self.config_entry.data.get(CONF_USE_SSL, DEFAULT_USE_SSL)
+        remote_mode = self.config_entry.data.get(CONF_REMOTE_MODE, False)
+        hub_id = self.config_entry.data.get(CONF_HUB_ID, "")
+
+        # Build path for remote connection
+        path = f"/{hub_id}/client" if remote_mode and hub_id else ""
 
         # Load or create authentication keys
         private_key = self.config_entry.data.get(STORAGE_KEY_PRIVATE_KEY)
@@ -132,6 +139,7 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
             host=host,
             port=port,
             use_ssl=use_ssl,
+            path=path,
             auth=auth,
         )
         self._client.set_broadcast_callback(self._handle_broadcast)

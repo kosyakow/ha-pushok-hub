@@ -10,15 +10,47 @@
           "use_ssl": "Use SSL",
           "name": "Name (optional)"
         }
+      },
+      "remote": {
+        "title": "Remote Connection",
+        "description": "Enter your Hub ID to connect via cloud gateway.",
+        "data": {
+          "hub_id": "Hub ID",
+          "name": "Name (optional)"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure Connection",
+        "description": "Authentication keys will be preserved.",
+        "data": {
+          "connection_type": "How to connect to the hub"
+        }
+      },
+      "reconfigure_local": {
+        "title": "Local Connection",
+        "description": "Update local connection settings.",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "use_ssl": "Use SSL"
+        }
+      },
+      "reconfigure_remote": {
+        "title": "Remote Connection",
+        "description": "Update remote connection settings.",
+        "data": {
+          "hub_id": "Hub ID"
+        }
       }
     },
     "error": {
-      "cannot_connect": "Failed to connect to the hub. Please check the host and port.",
-      "invalid_auth": "Authentication failed.",
+      "cannot_connect": "Failed to connect to the hub. Please check the settings.",
+      "invalid_auth": "Authentication failed. Please check your credentials.",
       "unknown": "An unknown error occurred."
     },
     "abort": {
-      "already_configured": "This hub is already configured."
+      "already_configured": "This hub is already configured.",
+      "reconfigure_successful": "Configuration updated successfully."
     }
   }
 }

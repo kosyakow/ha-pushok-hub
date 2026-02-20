@@ -1,5 +1,7 @@
 # Pushok Hub MQTT Bridge
 
+[Русская версия](README.ru.md)
+
 MQTT bridge for Pushok Zigbee Hub in Zigbee2MQTT-compatible format.
 
 ## Features
