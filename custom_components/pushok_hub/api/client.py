@@ -292,43 +292,45 @@ class PushokHubClient:
 
         try:
             async for message in self._ws:
-                if isinstance(message, bytes):
-                    # Binary message handling (for file operations)
-                    _LOGGER.debug("Received binary message: %d bytes", len(message))
-                    continue
-
                 try:
-                    data = json.loads(message)
-                except json.JSONDecodeError:
-                    _LOGGER.warning("Invalid JSON received: %s", message[:100])
-                    continue
+                    if isinstance(message, bytes):
+                        # Binary message handling (for file operations)
+                        _LOGGER.debug("Received binary message: %d bytes", len(message))
+                        continue
 
-                # Check if it's a broadcast
-                if "broadcast" in data:
-                    self._handle_broadcast(data["broadcast"])
-                    continue
+                    try:
+                        data = json.loads(message)
+                    except json.JSONDecodeError:
+                        _LOGGER.warning("Invalid JSON received: %s", message[:100])
+                        continue
 
-                # Check if it's a command response
-                cmd_id = data.get("id")
-                if cmd_id and cmd_id in self._pending_commands:
-                    future = self._pending_commands[cmd_id]
-                    if not future.done():
-                        future.set_result(data)
+                    # Check if it's a broadcast
+                    if "broadcast" in data:
+                        self._handle_broadcast(data["broadcast"])
+                        continue
 
-        except websockets.ConnectionClosed:
-            _LOGGER.info("WebSocket connection closed")
+                    # Check if it's a command response
+                    cmd_id = data.get("id")
+                    if cmd_id and cmd_id in self._pending_commands:
+                        future = self._pending_commands[cmd_id]
+                        if not future.done():
+                            future.set_result(data)
+                except Exception:
+                    # Errors raised by handlers (e.g. HA state validation) must not
+                    # tear down the receive loop or be misread as connection loss.
+                    _LOGGER.exception("Error processing message; receive loop continues")
+
+        except (websockets.ConnectionClosed, OSError) as e:
+            _LOGGER.info("WebSocket connection lost: %s", e)
             was_connected = self._connected
             self._connected = False
             self._authorized = False
             if was_connected and self._connection_lost_callback:
                 self._connection_lost_callback()
-        except Exception as e:
-            _LOGGER.error("Error in receive loop: %s", e)
-            was_connected = self._connected
+        except Exception:
+            _LOGGER.exception("Unexpected error in receive loop; not triggering reconnect")
             self._connected = False
             self._authorized = False
-            if was_connected and self._connection_lost_callback:
-                self._connection_lost_callback()
 
     def _handle_broadcast(self, data: dict[str, Any]) -> None:
         """Handle broadcast message from hub."""

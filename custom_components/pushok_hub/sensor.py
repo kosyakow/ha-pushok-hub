@@ -82,23 +82,23 @@ class PushokHubSensor(PushokHubEntity, SensorEntity):
             for label, value in self._adapter_param.labels.items():
                 self._value_to_label[value] = label
 
-        # If has labels, this is an enum sensor (no state_class)
-        # Otherwise it's a measurement
-        if not self._value_to_label:
+        if self._value_to_label:
+            # Labelled param -> enum sensor; numeric device classes would reject string values
+            self._attr_device_class = SensorDeviceClass.ENUM
+            self._attr_options = sorted(set(self._value_to_label.values()))
+        else:
             self._attr_state_class = SensorStateClass.MEASUREMENT
 
-        # Set device class based on param name
-        if self._adapter_param and self._adapter_param.name:
-            param_name = self._adapter_param.name.lower()
-            device_class_str = SENSOR_DEVICE_CLASS_MAPPING.get(param_name)
-            if device_class_str:
-                try:
-                    self._attr_device_class = SensorDeviceClass(device_class_str)
-                except ValueError:
-                    pass
+            # Set device class based on param name
+            if self._adapter_param and self._adapter_param.name:
+                param_name = self._adapter_param.name.lower()
+                device_class_str = SENSOR_DEVICE_CLASS_MAPPING.get(param_name)
+                if device_class_str:
+                    try:
+                        self._attr_device_class = SensorDeviceClass(device_class_str)
+                    except ValueError:
+                        pass
 
-        # Set unit from adapter (only if no labels)
-        if not self._value_to_label:
             unit = self._get_ha_unit()
             if unit:
                 self._attr_native_unit_of_measurement = unit
