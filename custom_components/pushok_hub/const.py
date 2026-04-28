@@ -102,6 +102,8 @@ SENSOR_DEVICE_CLASS_MAPPING: Final = {
     "hum": "humidity",
     "pressure": "pressure",
     "battery": "battery",
+    "battery percent": "battery",
+    "battery_percent": "battery",
     "voltage": "voltage",
     "current": "current",
     "power": "power",

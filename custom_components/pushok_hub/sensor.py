@@ -82,37 +82,54 @@ class PushokHubSensor(PushokHubEntity, SensorEntity):
             for label, value in self._adapter_param.labels.items():
                 self._value_to_label[value] = label
 
-        if self._value_to_label:
-            # Labelled param -> enum sensor; numeric device classes would reject string values
+        unit = self._get_ha_unit()
+
+        # Distinguish pure enum params from numeric measurements that merely have
+        # named threshold markers in `labels`. Float params and params carrying a
+        # measurement unit are treated as numeric — their `labels` are ignored
+        # for state purposes.
+        param_type = self._adapter_param.param_type if self._adapter_param else None
+        self._is_enum = bool(self._value_to_label) and param_type != "float" and not unit
+
+        if self._is_enum:
             self._attr_device_class = SensorDeviceClass.ENUM
             self._attr_options = sorted(set(self._value_to_label.values()))
         else:
             self._attr_state_class = SensorStateClass.MEASUREMENT
 
-            # Set device class based on param name
             if self._adapter_param and self._adapter_param.name:
                 param_name = self._adapter_param.name.lower()
                 device_class_str = SENSOR_DEVICE_CLASS_MAPPING.get(param_name)
+                # Reconcile name-based class with actual unit. A param named
+                # "battery" can carry voltage (mV/V) on some drivers; HA will
+                # reject device_class=battery without unit "%".
+                raw_unit = (
+                    self._adapter_param.view_params.get("unit")
+                    if self._adapter_param else None
+                )
+                if device_class_str == "battery" and raw_unit and raw_unit != "unit_%":
+                    if raw_unit in ("unit_mV", "unit_voltage", "unit_V"):
+                        device_class_str = "voltage"
+                    else:
+                        device_class_str = None
                 if device_class_str:
                     try:
                         self._attr_device_class = SensorDeviceClass(device_class_str)
                     except ValueError:
                         pass
 
-            unit = self._get_ha_unit()
             if unit:
                 self._attr_native_unit_of_measurement = unit
 
     @property
     def native_value(self):
         """Return the sensor value."""
-        raw_value = self._raw_state_value
+        if self._is_enum:
+            raw_value = self._raw_state_value
+            if raw_value in self._value_to_label:
+                return self._value_to_label[raw_value]
+            return None
 
-        # If has labels, return string label
-        if self._value_to_label and raw_value in self._value_to_label:
-            return self._value_to_label[raw_value]
-
-        # Otherwise return converted numeric value
         value = self._state_value
         if isinstance(value, float):
             return round(value, 2)
