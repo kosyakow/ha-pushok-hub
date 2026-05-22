@@ -68,36 +68,39 @@ def _find_light_fields(coordinator: PushokHubCoordinator, device_id: str) -> dic
     return fields
 
 
+def _build_entities_for_device(
+    coordinator: PushokHubCoordinator, device
+) -> list:
+    """Build light entities for a single device."""
+    entities: list = []
+    light_fields = _find_light_fields(coordinator, device.id)
+    if light_fields:
+        entities.append(
+            PushokHubLight(
+                coordinator,
+                device,
+                on_off_field=light_fields["on_off"],
+                brightness_field=light_fields["brightness"],
+                color_temp_field=light_fields["color_temp"],
+            )
+        )
+    return entities
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Pushok Hub lights.
-
-    Args:
-        hass: Home Assistant instance
-        entry: Config entry
-        async_add_entities: Callback to add entities
-    """
+    """Set up Pushok Hub lights."""
     coordinator: PushokHubCoordinator = entry.runtime_data
 
-    entities: list[PushokHubLight] = []
-
-    for device_id, device in coordinator.devices.items():
-        light_fields = _find_light_fields(coordinator, device_id)
-        if light_fields:
-            entities.append(
-                PushokHubLight(
-                    coordinator,
-                    device,
-                    on_off_field=light_fields["on_off"],
-                    brightness_field=light_fields["brightness"],
-                    color_temp_field=light_fields["color_temp"],
-                )
-            )
-
+    entities: list = []
+    for device in coordinator.devices.values():
+        entities.extend(_build_entities_for_device(coordinator, device))
     async_add_entities(entities)
+
+    coordinator.register_platform_builder(_build_entities_for_device, async_add_entities)
 
 
 class PushokHubLight(PushokHubEntity, LightEntity):

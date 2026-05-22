@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import timedelta
-from typing import Any
+from typing import Any, Callable
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .api import PushokHubClient, PushokAuth
@@ -22,12 +24,17 @@ from .const import (
     CONF_HUB_ID,
     DEFAULT_PORT,
     DEFAULT_USE_SSL,
+    DEVICE_LIST_POLL_INTERVAL,
     ENTITY_TYPE_ZIGBEE,
+    EVT_OBJECT_ADD,
+    EVT_OBJECT_REMOVE,
     EVT_OBJECT_UPDATE,
     RECONNECT_INTERVAL,
     STORAGE_KEY_PRIVATE_KEY,
     STORAGE_KEY_USER_ID,
 )
+
+PlatformBuilder = Callable[["PushokHubCoordinator", DeviceDescription], list]
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -59,10 +66,16 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         self.config_entry = entry
         self._client: PushokHubClient | None = None
         self._reconnect_task: asyncio.Task | None = None
+        self._device_poll_task: asyncio.Task | None = None
         self._devices: dict[str, DeviceDescription] = {}
         self._formats: dict[str, DeviceFormat] = {}
         self._attributes: dict[str, DeviceAttributes] = {}
         self._adapters: dict[str, DeviceAdapter] = {}  # Cached by driver name
+
+        # Registered platform builders for dynamic device add/remove
+        self._platform_builders: list[tuple[PlatformBuilder, AddEntitiesCallback]] = []
+        # Serialize add/remove against concurrent broadcasts and the periodic poller
+        self._devices_lock = asyncio.Lock()
 
     @property
     def client(self) -> PushokHubClient | None:
@@ -148,6 +161,7 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         try:
             await self._client.connect()
             await self._load_devices()
+            self._start_device_list_poller()
             return True
         except Exception as e:
             _LOGGER.error("Failed to connect to hub: %s", e)
@@ -163,8 +177,29 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
             except asyncio.CancelledError:
                 pass
 
+        if self._device_poll_task:
+            self._device_poll_task.cancel()
+            try:
+                await self._device_poll_task
+            except asyncio.CancelledError:
+                pass
+
         if self._client:
             await self._client.disconnect()
+
+    def register_platform_builder(
+        self,
+        builder: PlatformBuilder,
+        async_add_entities: AddEntitiesCallback,
+    ) -> None:
+        """Register a platform's entity builder for dynamic device addition.
+
+        Each platform calls this from its async_setup_entry. When a new device
+        appears (broadcast object_add or periodic re-poll diff), the coordinator
+        calls every registered builder for the new device and passes the produced
+        entities to the platform's async_add_entities callback.
+        """
+        self._platform_builders.append((builder, async_add_entities))
 
     async def _load_devices(self) -> None:
         """Load all devices from the hub."""
@@ -231,6 +266,196 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
 
         self.async_set_updated_data(states)
 
+    async def _load_single_device(self, device: DeviceDescription) -> DeviceState | None:
+        """Load state/format/attributes/adapter for a single device.
+
+        Returns the device's state (or None if it couldn't be loaded). Updates
+        self._formats, self._attributes, self._adapters as side effects.
+        """
+        if not self._client:
+            return None
+
+        state: DeviceState | None = None
+        try:
+            state = await self._client.get_state(device.id)
+        except Exception as e:
+            _LOGGER.warning("Failed to load state for %s: %s", device.id, e)
+
+        try:
+            self._formats[device.id] = await self._client.get_format(device.id)
+        except Exception as e:
+            _LOGGER.warning("Failed to load format for %s: %s", device.id, e)
+
+        try:
+            self._attributes[device.id] = await self._client.get_attributes(device.id)
+        except Exception as e:
+            _LOGGER.debug("No attributes for %s: %s", device.id, e)
+
+        if device.driver and device.driver not in self._adapters:
+            try:
+                self._adapters[device.driver] = await self._client.get_adapter(device.driver)
+            except Exception as e:
+                _LOGGER.warning(
+                    "Failed to load adapter for driver %s: %s", device.driver, e
+                )
+
+        return state
+
+    async def async_add_device(self, device: DeviceDescription) -> None:
+        """Register a new device with the coordinator and create its HA entities.
+
+        Idempotent: if the device is already known, this is a no-op.
+        """
+        async with self._devices_lock:
+            if device.id in self._devices:
+                return
+
+            _LOGGER.info(
+                "Adding new device %s (model=%s, driver=%s)",
+                device.id,
+                device.model,
+                device.driver,
+            )
+
+            state = await self._load_single_device(device)
+            self._devices[device.id] = device
+
+            # Merge state into coordinator data
+            if state is not None:
+                current_data = dict(self.data) if self.data else {}
+                current_data[device.id] = state
+                self.async_set_updated_data(current_data)
+
+            # Create entities on every registered platform
+            for builder, add_entities in self._platform_builders:
+                try:
+                    entities = builder(self, device)
+                except Exception as e:
+                    _LOGGER.exception("Platform builder failed for %s: %s", device.id, e)
+                    continue
+                if entities:
+                    add_entities(entities)
+
+    async def async_remove_device(self, device_id: str) -> None:
+        """Remove a device from the coordinator and from Home Assistant.
+
+        Removing the device from the device_registry cascades to all entities
+        that belonged to it (entity_registry removes them automatically).
+        """
+        async with self._devices_lock:
+            if device_id not in self._devices:
+                return
+
+            _LOGGER.info("Removing device %s", device_id)
+
+            self._devices.pop(device_id, None)
+            self._formats.pop(device_id, None)
+            self._attributes.pop(device_id, None)
+            # Adapters are shared across devices and stay cached.
+
+            if self.data and device_id in self.data:
+                new_data = dict(self.data)
+                del new_data[device_id]
+                self.async_set_updated_data(new_data)
+
+            dev_reg = dr.async_get(self.hass)
+            device_entry = dev_reg.async_get_device(identifiers={(DOMAIN, device_id)})
+            if device_entry:
+                dev_reg.async_remove_device(device_entry.id)
+
+    async def _reload_after_reconnect(self) -> None:
+        """Reload devices after a reconnect, applying any add/remove diff.
+
+        Refreshes state of devices that still exist, creates HA entities for
+        devices that appeared during the disconnect, and removes entities of
+        devices that disappeared.
+        """
+        if not self._client:
+            return
+
+        old_ids = set(self._devices.keys())
+
+        try:
+            devices = await self._client.get_devices(ENTITY_TYPE_ZIGBEE)
+        except Exception as e:
+            _LOGGER.warning("Failed to fetch device list on reconnect: %s", e)
+            return
+
+        remote_ids = {d.id for d in devices}
+        added_devices = [d for d in devices if d.id not in old_ids]
+        removed_ids = old_ids - remote_ids
+        kept_devices = [d for d in devices if d.id in old_ids]
+
+        # Refresh state of devices that survived (description may have updated metadata)
+        new_data = dict(self.data) if self.data else {}
+        for device in kept_devices:
+            self._devices[device.id] = device
+            try:
+                state = await self._client.get_state(device.id)
+                new_data[device.id] = state
+            except Exception as e:
+                _LOGGER.debug("State refresh failed for %s: %s", device.id, e)
+        self.async_set_updated_data(new_data)
+
+        for device in added_devices:
+            await self.async_add_device(device)
+
+        for device_id in removed_ids:
+            await self.async_remove_device(device_id)
+
+    async def _refresh_device_list(self) -> None:
+        """Re-fetch the device list from the hub and apply add/remove diff.
+
+        Safety net for missed broadcasts. Runs on a long interval; the primary
+        source of truth for add/remove is the broadcast handler.
+        """
+        if not self._client or not self._client.connected:
+            return
+
+        try:
+            devices = await self._client.get_devices(ENTITY_TYPE_ZIGBEE)
+        except Exception as e:
+            _LOGGER.debug("Periodic device list refresh failed: %s", e)
+            return
+
+        remote_ids = {d.id for d in devices}
+        known_ids = set(self._devices.keys())
+
+        added = remote_ids - known_ids
+        removed = known_ids - remote_ids
+
+        if added or removed:
+            _LOGGER.info(
+                "Device list drift detected: +%d -%d", len(added), len(removed)
+            )
+
+        for device in devices:
+            if device.id in added:
+                await self.async_add_device(device)
+
+        for device_id in removed:
+            await self.async_remove_device(device_id)
+
+    def _start_device_list_poller(self) -> None:
+        """Start (or restart) the periodic device-list refresh task."""
+        if self._device_poll_task and not self._device_poll_task.done():
+            return
+        self._device_poll_task = self.hass.async_create_background_task(
+            self._device_list_poll_loop(),
+            name=f"{DOMAIN}_device_list_poll",
+        )
+
+    async def _device_list_poll_loop(self) -> None:
+        """Periodically refresh the device list as a safety net."""
+        while True:
+            try:
+                await asyncio.sleep(DEVICE_LIST_POLL_INTERVAL)
+                await self._refresh_device_list()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                _LOGGER.exception("Device list poll loop error: %s", e)
+
     @callback
     def _handle_broadcast(self, data: dict[str, Any]) -> None:
         """Handle broadcast message from hub.
@@ -242,6 +467,49 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
 
         if evt == EVT_OBJECT_UPDATE:
             self._handle_object_update(data)
+        elif evt == EVT_OBJECT_ADD:
+            self._handle_object_add(data)
+        elif evt == EVT_OBJECT_REMOVE:
+            self._handle_object_remove(data)
+
+    @callback
+    def _handle_object_add(self, data: dict[str, Any]) -> None:
+        """Handle object_add broadcast: a new device was paired on the hub."""
+        device_id = data.get("id")
+        if not device_id or data.get("type") != ENTITY_TYPE_ZIGBEE:
+            return
+        if device_id in self._devices:
+            return
+
+        # Need the full device description; re-fetch the device list to find it.
+        self.hass.async_create_task(self._fetch_and_add_device(device_id))
+
+    async def _fetch_and_add_device(self, device_id: str) -> None:
+        """Look up a newly-added device on the hub and register it locally."""
+        if not self._client:
+            return
+        try:
+            devices = await self._client.get_devices(ENTITY_TYPE_ZIGBEE)
+        except Exception as e:
+            _LOGGER.warning("Failed to fetch devices after object_add: %s", e)
+            return
+
+        for device in devices:
+            if device.id == device_id:
+                await self.async_add_device(device)
+                return
+
+        _LOGGER.debug("object_add for %s but device not in list yet", device_id)
+
+    @callback
+    def _handle_object_remove(self, data: dict[str, Any]) -> None:
+        """Handle object_remove broadcast: a device was unpaired on the hub."""
+        device_id = data.get("id")
+        if not device_id:
+            return
+        if device_id not in self._devices:
+            return
+        self.hass.async_create_task(self.async_remove_device(device_id))
 
     @callback
     def _handle_object_update(self, data: dict[str, Any]) -> None:
@@ -334,7 +602,8 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
                 if self._client:
                     await self._client.disconnect()
                     await self._client.connect()
-                    await self._load_devices()
+                    await self._reload_after_reconnect()
+                    self._start_device_list_poller()
                     _LOGGER.info("Reconnected to hub")
                     # Notify listeners that connection is restored
                     self.async_set_updated_data(self.data)

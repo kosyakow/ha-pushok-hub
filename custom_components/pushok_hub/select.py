@@ -16,37 +16,36 @@ from .entity import PushokHubEntity
 _LOGGER = logging.getLogger(__name__)
 
 
+def _build_entities_for_device(
+    coordinator: PushokHubCoordinator, device
+) -> list:
+    """Build select entities for a single device."""
+    entities: list = []
+    adapter = coordinator.get_adapter_for_device(device.id)
+    if adapter and adapter.params:
+        for param in adapter.params:
+            if param.address > MAX_FIELD_ID:
+                continue
+            view_type = param.view_params.get("type", "")
+            if view_type == "dropdown" and param.labels and param.is_writable:
+                entities.append(PushokHubSelect(coordinator, device, param.address))
+    return entities
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Pushok Hub selects.
-
-    Args:
-        hass: Home Assistant instance
-        entry: Config entry
-        async_add_entities: Callback to add entities
-    """
+    """Set up Pushok Hub selects."""
     coordinator: PushokHubCoordinator = entry.runtime_data
 
-    entities: list[PushokHubSelect] = []
-
-    for device_id, device in coordinator.devices.items():
-        adapter = coordinator.get_adapter_for_device(device_id)
-        if adapter and adapter.params:
-            for param in adapter.params:
-                # Skip service fields (ID > MAX_FIELD_ID)
-                if param.address > MAX_FIELD_ID:
-                    continue
-                # Create select for params with dropdown viewType and labels
-                view_type = param.view_params.get("type", "")
-                if view_type == "dropdown" and param.labels and param.is_writable:
-                    entities.append(
-                        PushokHubSelect(coordinator, device, param.address)
-                    )
-
+    entities: list = []
+    for device in coordinator.devices.values():
+        entities.extend(_build_entities_for_device(coordinator, device))
     async_add_entities(entities)
+
+    coordinator.register_platform_builder(_build_entities_for_device, async_add_entities)
 
 
 class PushokHubSelect(PushokHubEntity, SelectEntity):
