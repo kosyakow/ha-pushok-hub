@@ -24,6 +24,7 @@ from custom_components.pushok_hub.api.models import (
     DeviceState,
     PropertyValue,
 )
+from custom_components.pushok_hub.const import UNIT_MAPPING
 
 import paho.mqtt.client as mqtt
 
@@ -806,15 +807,7 @@ class PushokMqttBridge:
                         component = "sensor"
                         unit = param.view_params.get("unit")
                         if unit:
-                            # Map units
-                            unit_map = {
-                                "unit_C": "°C",
-                                "unit_%": "%",
-                                "unit_voltage": "V",
-                                "unit_power": "W",
-                                "unit_mA": "mA",
-                            }
-                            config_payload["unit_of_measurement"] = unit_map.get(unit, unit)
+                            config_payload["unit_of_measurement"] = UNIT_MAPPING.get(unit, unit)
                 else:
                     continue
 
