@@ -27,6 +27,8 @@ ENTITY_TYPE_GATEWAY: Final = "gateway"
 
 # Broadcast Events
 EVT_OBJECT_UPDATE: Final = "object_update"
+EVT_OBJECT_ADD: Final = "object_add"
+EVT_OBJECT_REMOVE: Final = "object_remove"
 EVT_NOTIFICATION: Final = "notification"
 EVT_DEVICE_STATE_CHANGE: Final = "device_state_change"
 

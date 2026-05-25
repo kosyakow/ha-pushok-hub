@@ -20,53 +20,46 @@ from .entity import PushokHubEntity
 _LOGGER = logging.getLogger(__name__)
 
 
+def _build_entities_for_device(
+    coordinator: PushokHubCoordinator, device
+) -> list:
+    """Build sensor entities for a single device."""
+    entities: list = []
+
+    adapter = coordinator.get_adapter_for_device(device.id)
+    if adapter and adapter.params:
+        for param in adapter.params:
+            if param.address > MAX_FIELD_ID:
+                continue
+            if param.param_type in ("int", "float") and not param.is_writable:
+                entities.append(PushokHubSensor(coordinator, device, param.address))
+    else:
+        fmt = coordinator.formats.get(device.id)
+        if fmt:
+            for field_id, field_fmt in fmt.fields.items():
+                if field_id > MAX_FIELD_ID:
+                    continue
+                if field_fmt.is_numeric and field_fmt.is_read_only:
+                    entities.append(PushokHubSensor(coordinator, device, field_id))
+
+    entities.append(PushokHubLQISensor(coordinator, device))
+    return entities
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Pushok Hub sensors.
-
-    Args:
-        hass: Home Assistant instance
-        entry: Config entry
-        async_add_entities: Callback to add entities
-    """
+    """Set up Pushok Hub sensors."""
     coordinator: PushokHubCoordinator = entry.runtime_data
 
-    entities: list[PushokHubSensor] = []
-
-    for device_id, device in coordinator.devices.items():
-        # First try to use adapter params (more complete info)
-        adapter = coordinator.get_adapter_for_device(device_id)
-        if adapter and adapter.params:
-            for param in adapter.params:
-                # Skip service fields (ID > MAX_FIELD_ID)
-                if param.address > MAX_FIELD_ID:
-                    continue
-                # Create sensor for numeric read-only params
-                if param.param_type in ("int", "float") and not param.is_writable:
-                    entities.append(
-                        PushokHubSensor(coordinator, device, param.address)
-                    )
-        else:
-            # Fallback to format if no adapter
-            fmt = coordinator.formats.get(device_id)
-            if fmt:
-                for field_id, field_fmt in fmt.fields.items():
-                    # Skip service fields (ID > MAX_FIELD_ID)
-                    if field_id > MAX_FIELD_ID:
-                        continue
-                    if field_fmt.is_numeric and field_fmt.is_read_only:
-                        entities.append(
-                            PushokHubSensor(coordinator, device, field_id)
-                        )
-
-    # Add LQI sensor for each device
-    for device_id, device in coordinator.devices.items():
-        entities.append(PushokHubLQISensor(coordinator, device))
-
+    entities: list = []
+    for device in coordinator.devices.values():
+        entities.extend(_build_entities_for_device(coordinator, device))
     async_add_entities(entities)
+
+    coordinator.register_platform_builder(_build_entities_for_device, async_add_entities)
 
 
 class PushokHubSensor(PushokHubEntity, SensorEntity):

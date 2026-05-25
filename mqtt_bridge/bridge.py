@@ -33,6 +33,12 @@ from .config import BridgeConfig
 _LOGGER = logging.getLogger(__name__)
 
 
+def _is_gateway_id(device_id: str | None) -> bool:
+    """The hub exposes itself either as id "0" (broadcasts) or "0000…000"
+    (get_devices). Both mean "this is the gateway, not a real device"."""
+    return bool(device_id) and set(device_id) == {"0"}
+
+
 class PushokMqttBridge:
     """MQTT Bridge for Pushok Hub in Zigbee2MQTT format."""
 
@@ -57,6 +63,13 @@ class PushokMqttBridge:
         self._reconnect_task: asyncio.Task | None = None
         self._reconnect_interval = 10  # seconds
 
+        # Fallback poll of device list (safety net for missed object_add/remove broadcasts)
+        self._device_poll_task: asyncio.Task | None = None
+        self._device_poll_interval = 600  # seconds
+
+        # Per-device list of published MQTT discovery topics, to be cleared on removal
+        self._discovery_topics: dict[str, list[str]] = {}
+
         self._running = False
 
     @property
@@ -76,6 +89,9 @@ class PushokMqttBridge:
         # Connect to MQTT
         self._connect_mqtt()
 
+        # Periodic device-list re-poll as a safety net
+        self._device_poll_task = asyncio.create_task(self._device_list_poll_loop())
+
         # Run main loop
         try:
             while self._running:
@@ -93,6 +109,14 @@ class PushokMqttBridge:
             self._reconnect_task.cancel()
             try:
                 await self._reconnect_task
+            except asyncio.CancelledError:
+                pass
+
+        # Cancel device poll task
+        if self._device_poll_task and not self._device_poll_task.done():
+            self._device_poll_task.cancel()
+            try:
+                await self._device_poll_task
             except asyncio.CancelledError:
                 pass
 
@@ -140,35 +164,38 @@ class PushokMqttBridge:
         if not self._hub_client:
             return
 
-        devices = await self._hub_client.get_devices("zigbee")
+        devices = [d for d in await self._hub_client.get_devices("zigbee") if not _is_gateway_id(d.id)]
         self._devices = {d.id: d for d in devices}
         _LOGGER.info("Loaded %d devices", len(self._devices))
 
         for device_id, device in self._devices.items():
             _LOGGER.debug("Processing device %s: %s", device_id, device.model)
+            await self._load_single_device(device)
 
-            # Load state
+    async def _load_single_device(self, device: DeviceDescription) -> None:
+        """Load state/attributes/adapter for a single device."""
+        if not self._hub_client:
+            return
+
+        try:
+            state = await self._hub_client.get_state(device.id)
+            self._states[device.id] = state
+        except Exception as e:
+            _LOGGER.warning("Failed to load state for %s: %s", device.id, e)
+
+        try:
+            attrs = await self._hub_client.get_attributes(device.id)
+            self._attributes[device.id] = attrs
+        except Exception as e:
+            _LOGGER.debug("No attributes for %s: %s", device.id, e)
+
+        if device.driver and device.driver not in self._adapters:
             try:
-                state = await self._hub_client.get_state(device_id)
-                self._states[device_id] = state
+                adapter = await self._hub_client.get_adapter(device.driver)
+                self._adapters[device.driver] = adapter
+                _LOGGER.debug("Loaded adapter %s", device.driver)
             except Exception as e:
-                _LOGGER.warning("Failed to load state for %s: %s", device_id, e)
-
-            # Load attributes
-            try:
-                attrs = await self._hub_client.get_attributes(device_id)
-                self._attributes[device_id] = attrs
-            except Exception as e:
-                _LOGGER.debug("No attributes for %s: %s", device_id, e)
-
-            # Load adapter
-            if device.driver and device.driver not in self._adapters:
-                try:
-                    adapter = await self._hub_client.get_adapter(device.driver)
-                    self._adapters[device.driver] = adapter
-                    _LOGGER.debug("Loaded adapter %s", device.driver)
-                except Exception as e:
-                    _LOGGER.warning("Failed to load adapter %s: %s", device.driver, e)
+                _LOGGER.warning("Failed to load adapter %s: %s", device.driver, e)
 
     def _handle_hub_connection_lost(self) -> None:
         """Handle connection lost event from hub client."""
@@ -388,12 +415,108 @@ class PushokMqttBridge:
     def _handle_hub_broadcast(self, data: dict[str, Any]) -> None:
         """Handle broadcast message from hub."""
         evt = data.get("evt")
+        if not self._loop:
+            return
         if evt == "object_update":
-            if self._loop:
+            asyncio.run_coroutine_threadsafe(
+                self._handle_object_update(data), self._loop
+            )
+        elif evt == "object_add":
+            device_id = data.get("id")
+            if (
+                device_id
+                and not _is_gateway_id(device_id)
+                and data.get("type") == "zigbee"
+                and device_id not in self._devices
+            ):
                 asyncio.run_coroutine_threadsafe(
-                    self._handle_object_update(data),
-                    self._loop
+                    self._handle_object_add(device_id), self._loop
                 )
+        elif evt == "object_remove":
+            device_id = data.get("id")
+            if device_id and device_id in self._devices:
+                asyncio.run_coroutine_threadsafe(
+                    self._handle_object_remove(device_id), self._loop
+                )
+
+    async def _handle_object_add(self, device_id: str) -> None:
+        """Fetch a newly-added device and publish discovery/state for it."""
+        if not self._hub_client or _is_gateway_id(device_id):
+            return
+        try:
+            devices = await self._hub_client.get_devices("zigbee")
+        except Exception as e:
+            _LOGGER.warning("Failed to fetch devices after object_add: %s", e)
+            return
+        for device in devices:
+            if device.id == device_id:
+                await self._add_device(device)
+                return
+        _LOGGER.debug("object_add for %s but device not in list yet", device_id)
+
+    async def _add_device(self, device: DeviceDescription) -> None:
+        """Add a device locally and publish its MQTT discovery + initial state."""
+        if device.id in self._devices:
+            return
+        _LOGGER.info("Adding new device %s (%s)", device.id, device.model)
+        self._devices[device.id] = device
+        await self._load_single_device(device)
+        self._publish_device_state(device)
+        if self._config.mqtt.discovery_enabled:
+            self._publish_discovery_for_device(device)
+        self._publish_bridge_devices()
+
+    async def _handle_object_remove(self, device_id: str) -> None:
+        """Remove a device locally and clear its MQTT discovery + state topics."""
+        device = self._devices.pop(device_id, None)
+        if not device:
+            return
+        _LOGGER.info("Removing device %s", device_id)
+        self._states.pop(device_id, None)
+        self._attributes.pop(device_id, None)
+        # Adapters stay cached — shared across devices.
+
+        # Mark device offline so HA shows the entities as unavailable while
+        # discovery removal propagates.
+        self._publish(
+            f"{self.base_topic}/{device_id}/availability", "offline", retain=True
+        )
+
+        # Clear HA discovery — empty retained payload makes HA forget the entity.
+        for topic in self._discovery_topics.pop(device_id, []):
+            self._publish(topic, "", retain=True)
+
+        self._publish_bridge_devices()
+
+    async def _device_list_poll_loop(self) -> None:
+        """Periodically refresh the device list as a safety net."""
+        while self._running:
+            try:
+                await asyncio.sleep(self._device_poll_interval)
+            except asyncio.CancelledError:
+                return
+            if not self._hub_connected or not self._hub_client:
+                continue
+            try:
+                devices = [d for d in await self._hub_client.get_devices("zigbee") if not _is_gateway_id(d.id)]
+            except Exception as e:
+                _LOGGER.debug("Periodic device list refresh failed: %s", e)
+                continue
+
+            remote_ids = {d.id for d in devices}
+            known_ids = set(self._devices.keys())
+            added = [d for d in devices if d.id not in known_ids]
+            removed = known_ids - remote_ids
+
+            if added or removed:
+                _LOGGER.info(
+                    "Device list drift: +%d -%d", len(added), len(removed)
+                )
+
+            for device in added:
+                await self._add_device(device)
+            for device_id in removed:
+                await self._handle_object_remove(device_id)
 
     async def _handle_object_update(self, data: dict[str, Any]) -> None:
         """Handle object update from hub."""
@@ -723,95 +846,101 @@ class PushokMqttBridge:
         return f"field_{field_id}"
 
     def _publish_discovery(self) -> None:
-        """Publish Home Assistant MQTT discovery messages."""
+        """Publish Home Assistant MQTT discovery for all known devices."""
+        for device in self._devices.values():
+            self._publish_discovery_for_device(device)
+        _LOGGER.info("Published MQTT discovery for %d devices", len(self._devices))
+
+    def _publish_discovery_for_device(self, device: DeviceDescription) -> None:
+        """Publish HA MQTT discovery messages for a single device.
+
+        Tracks every published config topic in self._discovery_topics so it can
+        be cleared when the device is removed.
+        """
         prefix = self._config.mqtt.discovery_prefix
+        device_id = device.id
+        adapter = self._adapters.get(device.driver) if device.driver else None
+        friendly_name = self._get_friendly_name(device)
+        state = self._states.get(device_id)
 
-        for device_id, device in self._devices.items():
-            adapter = self._adapters.get(device.driver) if device.driver else None
-            friendly_name = self._get_friendly_name(device)
-            state = self._states.get(device_id)
+        if not adapter or not state:
+            return
 
-            if not adapter or not state:
+        device_info = {
+            "identifiers": [device_id],
+            "name": friendly_name,
+            "model": device.model,
+            "manufacturer": device.manufacturer,
+        }
+        if adapter.url:
+            device_info["configuration_url"] = adapter.url
+
+        topics: list[str] = []
+        for param in adapter.params:
+            if param.address > 200:  # Skip service fields
                 continue
 
-            # Device info for discovery
-            device_info = {
-                "identifiers": [device_id],
-                "name": friendly_name,
-                "model": device.model,
-                "manufacturer": device.manufacturer,
+            entity_id = f"pushok_{device_id}_{param.address}"
+            name = param.name or f"field_{param.address}"
+
+            safe_name = name.lower().replace(" ", "_").replace("-", "_")
+            object_id = f"{friendly_name}_{safe_name}".lower().replace(" ", "_")
+
+            prop_state_topic = f"{self.base_topic}/{device_id}/{name}"
+            prop_command_topic = f"{self.base_topic}/{device_id}/{name}/set"
+
+            config_payload = {
+                "name": name.replace("_", " ").title(),
+                "unique_id": entity_id,
+                "object_id": object_id,
+                "state_topic": prop_state_topic,
+                "device": device_info,
+                "availability_topic": f"{self.base_topic}/{device_id}/availability",
             }
-            if adapter.url:
-                device_info["configuration_url"] = adapter.url
 
-            for param in adapter.params:
-                if param.address > 200:  # Skip service fields
-                    continue
+            if param.param_type == "bool":
+                label_on = "on"
+                label_off = "off"
+                if param.labels:
+                    for label, val in param.labels.items():
+                        if val is True or val == 1:
+                            label_on = label
+                        elif val is False or val == 0:
+                            label_off = label
 
-                entity_id = f"pushok_{device_id}_{param.address}"
-                name = param.name or f"field_{param.address}"
-
-                # Create safe object_id for HA entity_id
-                safe_name = name.lower().replace(" ", "_").replace("-", "_")
-                object_id = f"{friendly_name}_{safe_name}".lower().replace(" ", "_")
-
-                # Use device_id in topics (more stable than friendly_name)
-                prop_state_topic = f"{self.base_topic}/{device_id}/{name}"
-                prop_command_topic = f"{self.base_topic}/{device_id}/{name}/set"
-
-                config_payload = {
-                    "name": name.replace("_", " ").title(),
-                    "unique_id": entity_id,
-                    "object_id": object_id,
-                    "state_topic": prop_state_topic,
-                    "device": device_info,
-                    "availability_topic": f"{self.base_topic}/{device_id}/availability",
-                }
-
-                # Determine component type
-                if param.param_type == "bool":
-                    # Get label values for on/off states (if defined)
-                    label_on = "on"
-                    label_off = "off"
-                    if param.labels:
-                        for label, val in param.labels.items():
-                            if val is True or val == 1:
-                                label_on = label
-                            elif val is False or val == 0:
-                                label_off = label
-
-                    if param.is_writable:
-                        component = "switch"
-                        config_payload["command_topic"] = prop_command_topic
-                        config_payload["payload_on"] = "true"
-                        config_payload["payload_off"] = "false"
-                        config_payload["state_on"] = label_on
-                        config_payload["state_off"] = label_off
-                    else:
-                        component = "binary_sensor"
-                        config_payload["payload_on"] = label_on
-                        config_payload["payload_off"] = label_off
-                elif param.param_type in ("int", "float"):
-                    if param.is_writable and param.view_params.get("type") == "dropdown":
-                        component = "select"
-                        config_payload["command_topic"] = prop_command_topic
-                        config_payload["options"] = list(param.labels.keys()) if param.labels else []
-                    elif param.is_writable:
-                        component = "number"
-                        config_payload["command_topic"] = prop_command_topic
-                        if param.min_value is not None:
-                            config_payload["min"] = param.min_value
-                        if param.max_value is not None:
-                            config_payload["max"] = param.max_value
-                    else:
-                        component = "sensor"
-                        unit = param.view_params.get("unit")
-                        if unit:
-                            config_payload["unit_of_measurement"] = UNIT_MAPPING.get(unit, unit)
+                if param.is_writable:
+                    component = "switch"
+                    config_payload["command_topic"] = prop_command_topic
+                    config_payload["payload_on"] = "true"
+                    config_payload["payload_off"] = "false"
+                    config_payload["state_on"] = label_on
+                    config_payload["state_off"] = label_off
                 else:
-                    continue
+                    component = "binary_sensor"
+                    config_payload["payload_on"] = label_on
+                    config_payload["payload_off"] = label_off
+            elif param.param_type in ("int", "float"):
+                if param.is_writable and param.view_params.get("type") == "dropdown":
+                    component = "select"
+                    config_payload["command_topic"] = prop_command_topic
+                    config_payload["options"] = list(param.labels.keys()) if param.labels else []
+                elif param.is_writable:
+                    component = "number"
+                    config_payload["command_topic"] = prop_command_topic
+                    if param.min_value is not None:
+                        config_payload["min"] = param.min_value
+                    if param.max_value is not None:
+                        config_payload["max"] = param.max_value
+                else:
+                    component = "sensor"
+                    unit = param.view_params.get("unit")
+                    if unit:
+                        config_payload["unit_of_measurement"] = UNIT_MAPPING.get(unit, unit)
+            else:
+                continue
 
-                topic = f"{prefix}/{component}/{device_id}/{param.address}/config"
-                self._publish(topic, json.dumps(config_payload), retain=True)
+            topic = f"{prefix}/{component}/{device_id}/{param.address}/config"
+            self._publish(topic, json.dumps(config_payload), retain=True)
+            topics.append(topic)
 
-        _LOGGER.info("Published MQTT discovery for %d devices", len(self._devices))
+        self._discovery_topics[device_id] = topics

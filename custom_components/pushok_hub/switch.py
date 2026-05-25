@@ -17,53 +17,47 @@ from .entity import PushokHubEntity
 _LOGGER = logging.getLogger(__name__)
 
 
+def _build_entities_for_device(
+    coordinator: PushokHubCoordinator, device
+) -> list:
+    """Build switch entities for a single device."""
+    entities: list = []
+    adapter = coordinator.get_adapter_for_device(device.id)
+    if adapter and adapter.params:
+        device_type = (adapter.device_type or "").lower()
+        is_light_device = any(t in device_type for t in ["light", "dimmer", "bulb"])
+        for param in adapter.params:
+            if param.address > MAX_FIELD_ID:
+                continue
+            if param.param_type == "bool" and param.is_writable:
+                if is_light_device:
+                    continue
+                entities.append(PushokHubSwitch(coordinator, device, param.address))
+    else:
+        fmt = coordinator.formats.get(device.id)
+        if fmt:
+            for field_id, field_fmt in fmt.fields.items():
+                if field_id > MAX_FIELD_ID:
+                    continue
+                if field_fmt.is_bool and not field_fmt.is_read_only:
+                    entities.append(PushokHubSwitch(coordinator, device, field_id))
+    return entities
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Pushok Hub switches.
-
-    Args:
-        hass: Home Assistant instance
-        entry: Config entry
-        async_add_entities: Callback to add entities
-    """
+    """Set up Pushok Hub switches."""
     coordinator: PushokHubCoordinator = entry.runtime_data
 
-    entities: list[PushokHubSwitch] = []
-
-    for device_id, device in coordinator.devices.items():
-        # First try to use adapter params (more complete info)
-        adapter = coordinator.get_adapter_for_device(device_id)
-        if adapter and adapter.params:
-            for param in adapter.params:
-                # Skip service fields (ID > MAX_FIELD_ID)
-                if param.address > MAX_FIELD_ID:
-                    continue
-                # Create switch for boolean read-write params
-                if param.param_type == "bool" and param.is_writable:
-                    # Skip if this is a light device (handled by light platform)
-                    device_type = (adapter.device_type or "").lower()
-                    if any(t in device_type for t in ["light", "dimmer", "bulb"]):
-                        continue
-                    entities.append(
-                        PushokHubSwitch(coordinator, device, param.address)
-                    )
-        else:
-            # Fallback to format if no adapter
-            fmt = coordinator.formats.get(device_id)
-            if fmt:
-                for field_id, field_fmt in fmt.fields.items():
-                    # Skip service fields (ID > MAX_FIELD_ID)
-                    if field_id > MAX_FIELD_ID:
-                        continue
-                    if field_fmt.is_bool and not field_fmt.is_read_only:
-                        entities.append(
-                            PushokHubSwitch(coordinator, device, field_id)
-                        )
-
+    entities: list = []
+    for device in coordinator.devices.values():
+        entities.extend(_build_entities_for_device(coordinator, device))
     async_add_entities(entities)
+
+    coordinator.register_platform_builder(_build_entities_for_device, async_add_entities)
 
 
 class PushokHubSwitch(PushokHubEntity, SwitchEntity):

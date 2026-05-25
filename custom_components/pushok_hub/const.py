@@ -55,12 +55,16 @@ DATA_TYPE_FLOAT: Final = 7
 
 # Broadcast Events
 EVT_OBJECT_UPDATE: Final = "object_update"
+EVT_OBJECT_ADD: Final = "object_add"
+EVT_OBJECT_REMOVE: Final = "object_remove"
 EVT_NOTIFICATION: Final = "notification"
 EVT_DEVICE_STATE_CHANGE: Final = "device_state_change"
 
 # Timeouts
 COMMAND_TIMEOUT: Final = 5.0
 RECONNECT_INTERVAL: Final = 10.0
+# Fallback re-poll of the device list (safety net for missed object_add/object_remove broadcasts)
+DEVICE_LIST_POLL_INTERVAL: Final = 600.0
 
 # Storage
 STORAGE_KEY_PRIVATE_KEY: Final = "ec_private_key"
