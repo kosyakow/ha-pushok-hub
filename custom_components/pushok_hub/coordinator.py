@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
 from typing import Any, Callable
 
 from homeassistant.config_entries import ConfigEntry
@@ -36,6 +35,17 @@ from .const import (
 
 PlatformBuilder = Callable[["PushokHubCoordinator", DeviceDescription], list]
 
+
+def _is_gateway_id(device_id: str | None) -> bool:
+    """The hub exposes itself either as id "0" (broadcasts) or "0000…000"
+    (get_devices, the all-zero zigbee IEEE). Both mean "this is the gateway,
+    not a real device" and must be filtered out everywhere."""
+    return bool(device_id) and set(device_id) == {"0"}
+
+
+def _is_real_device(device: DeviceDescription) -> bool:
+    return not _is_gateway_id(device.id)
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -55,13 +65,9 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
             hass: Home Assistant instance
             entry: Config entry for this hub
         """
-        super().__init__(
-            hass,
-            _LOGGER,
-            name=DOMAIN,
-            # Poll every 30 seconds as fallback (hub may not send all broadcasts)
-            update_interval=timedelta(seconds=30),
-        )
+        # No update_interval: state updates come from broadcast (object_update),
+        # and device-list reconciliation runs on its own long-period background task.
+        super().__init__(hass, _LOGGER, name=DOMAIN)
 
         self.config_entry = entry
         self._client: PushokHubClient | None = None
@@ -161,6 +167,7 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         try:
             await self._client.connect()
             await self._load_devices()
+            self._cleanup_orphan_devices()
             self._start_device_list_poller()
             return True
         except Exception as e:
@@ -206,8 +213,8 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         if not self._client:
             return
 
-        # Get device list
-        devices = await self._client.get_devices(ENTITY_TYPE_ZIGBEE)
+        # Get device list (drop the gateway pseudo-device with id "0")
+        devices = [d for d in await self._client.get_devices(ENTITY_TYPE_ZIGBEE) if _is_real_device(d)]
         self._devices = {d.id: d for d in devices}
 
         # Load state, format, and attributes for each device
@@ -376,7 +383,7 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         old_ids = set(self._devices.keys())
 
         try:
-            devices = await self._client.get_devices(ENTITY_TYPE_ZIGBEE)
+            devices = [d for d in await self._client.get_devices(ENTITY_TYPE_ZIGBEE) if _is_real_device(d)]
         except Exception as e:
             _LOGGER.warning("Failed to fetch device list on reconnect: %s", e)
             return
@@ -403,6 +410,8 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         for device_id in removed_ids:
             await self.async_remove_device(device_id)
 
+        self._cleanup_orphan_devices()
+
     async def _refresh_device_list(self) -> None:
         """Re-fetch the device list from the hub and apply add/remove diff.
 
@@ -413,7 +422,7 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
             return
 
         try:
-            devices = await self._client.get_devices(ENTITY_TYPE_ZIGBEE)
+            devices = [d for d in await self._client.get_devices(ENTITY_TYPE_ZIGBEE) if _is_real_device(d)]
         except Exception as e:
             _LOGGER.debug("Periodic device list refresh failed: %s", e)
             return
@@ -435,6 +444,27 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
 
         for device_id in removed:
             await self.async_remove_device(device_id)
+
+    def _cleanup_orphan_devices(self) -> None:
+        """Remove device_registry entries for devices the hub no longer has.
+
+        Covers two cases:
+        - The hub used to expose itself as device id "0" and earlier integration
+          versions registered it; we no longer want it.
+        - A device was unpaired in the Pushok app while HA was down; we missed
+          the object_remove broadcast.
+        """
+        dev_reg = dr.async_get(self.hass)
+        known_ids = set(self._devices.keys())
+        for entry in list(dev_reg.devices.values()):
+            our_ids = {ident[1] for ident in entry.identifiers if ident[0] == DOMAIN}
+            if not our_ids:
+                continue
+            if not our_ids & known_ids:
+                _LOGGER.info(
+                    "Removing orphan device entry %s (ids=%s)", entry.id, our_ids
+                )
+                dev_reg.async_remove_device(entry.id)
 
     def _start_device_list_poller(self) -> None:
         """Start (or restart) the periodic device-list refresh task."""
@@ -476,7 +506,9 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
     def _handle_object_add(self, data: dict[str, Any]) -> None:
         """Handle object_add broadcast: a new device was paired on the hub."""
         device_id = data.get("id")
-        if not device_id or data.get("type") != ENTITY_TYPE_ZIGBEE:
+        if not device_id or _is_gateway_id(device_id):
+            return
+        if data.get("type") != ENTITY_TYPE_ZIGBEE:
             return
         if device_id in self._devices:
             return
@@ -495,7 +527,7 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
             return
 
         for device in devices:
-            if device.id == device_id:
+            if device.id == device_id and _is_real_device(device):
                 await self.async_add_device(device)
                 return
 

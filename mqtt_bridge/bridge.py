@@ -33,6 +33,12 @@ from .config import BridgeConfig
 _LOGGER = logging.getLogger(__name__)
 
 
+def _is_gateway_id(device_id: str | None) -> bool:
+    """The hub exposes itself either as id "0" (broadcasts) or "0000…000"
+    (get_devices). Both mean "this is the gateway, not a real device"."""
+    return bool(device_id) and set(device_id) == {"0"}
+
+
 class PushokMqttBridge:
     """MQTT Bridge for Pushok Hub in Zigbee2MQTT format."""
 
@@ -158,7 +164,7 @@ class PushokMqttBridge:
         if not self._hub_client:
             return
 
-        devices = await self._hub_client.get_devices("zigbee")
+        devices = [d for d in await self._hub_client.get_devices("zigbee") if not _is_gateway_id(d.id)]
         self._devices = {d.id: d for d in devices}
         _LOGGER.info("Loaded %d devices", len(self._devices))
 
@@ -417,7 +423,12 @@ class PushokMqttBridge:
             )
         elif evt == "object_add":
             device_id = data.get("id")
-            if device_id and data.get("type") == "zigbee" and device_id not in self._devices:
+            if (
+                device_id
+                and not _is_gateway_id(device_id)
+                and data.get("type") == "zigbee"
+                and device_id not in self._devices
+            ):
                 asyncio.run_coroutine_threadsafe(
                     self._handle_object_add(device_id), self._loop
                 )
@@ -430,7 +441,7 @@ class PushokMqttBridge:
 
     async def _handle_object_add(self, device_id: str) -> None:
         """Fetch a newly-added device and publish discovery/state for it."""
-        if not self._hub_client:
+        if not self._hub_client or _is_gateway_id(device_id):
             return
         try:
             devices = await self._hub_client.get_devices("zigbee")
@@ -487,7 +498,7 @@ class PushokMqttBridge:
             if not self._hub_connected or not self._hub_client:
                 continue
             try:
-                devices = await self._hub_client.get_devices("zigbee")
+                devices = [d for d in await self._hub_client.get_devices("zigbee") if not _is_gateway_id(d.id)]
             except Exception as e:
                 _LOGGER.debug("Periodic device list refresh failed: %s", e)
                 continue
