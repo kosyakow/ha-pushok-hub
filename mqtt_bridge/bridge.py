@@ -257,7 +257,12 @@ class PushokMqttBridge:
                 _LOGGER.warning("Reconnect failed: %s, retrying in %ds...", e, self._reconnect_interval)
 
     def _connect_mqtt(self) -> None:
-        """Connect to MQTT broker."""
+        """Connect to MQTT broker.
+
+        Uses connect_async() so paho's network loop handles the initial connect
+        too — if the broker is unreachable at startup, paho will keep retrying
+        in the background instead of leaving the bridge stuck.
+        """
         self._mqtt_client = mqtt.Client(
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
             client_id=self._config.mqtt.client_id,
@@ -269,6 +274,18 @@ class PushokMqttBridge:
                 self._config.mqtt.password,
             )
 
+        # LWT: if the bridge process dies or loses the broker connection,
+        # the broker publishes "offline" on bridge/state so HA marks the
+        # bridge unavailable without us needing to send anything.
+        self._mqtt_client.will_set(
+            f"{self.base_topic}/bridge/state",
+            json.dumps({"state": "offline"}),
+            retain=True,
+        )
+
+        # Bounded reconnect backoff (paho default is 1–120s).
+        self._mqtt_client.reconnect_delay_set(min_delay=1, max_delay=30)
+
         self._mqtt_client.on_connect = self._on_mqtt_connect
         self._mqtt_client.on_disconnect = self._on_mqtt_disconnect
         self._mqtt_client.on_message = self._on_mqtt_message
@@ -276,16 +293,13 @@ class PushokMqttBridge:
         _LOGGER.info("Connecting to MQTT broker at %s:%d",
                      self._config.mqtt.host, self._config.mqtt.port)
 
-        try:
-            self._mqtt_client.connect(
-                self._config.mqtt.host,
-                self._config.mqtt.port,
-                keepalive=60,
-            )
-            _LOGGER.info("MQTT connect() called successfully")
-        except Exception as e:
-            _LOGGER.error("MQTT connect() failed: %s", e)
-            return
+        # connect_async never raises on DNS/refused — it queues the connect
+        # for the network loop, which keeps retrying with reconnect_delay_set.
+        self._mqtt_client.connect_async(
+            self._config.mqtt.host,
+            self._config.mqtt.port,
+            keepalive=60,
+        )
         self._mqtt_client.loop_start()
         _LOGGER.info("MQTT loop_start() called")
 
