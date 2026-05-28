@@ -453,10 +453,16 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
           versions registered it; we no longer want it.
         - A device was unpaired in the Pushok app while HA was down; we missed
           the object_remove broadcast.
+
+        Scoped to *this* config entry only — with multiple hubs each coordinator
+        must not touch the other hub's devices.
         """
         dev_reg = dr.async_get(self.hass)
         known_ids = set(self._devices.keys())
-        for entry in list(dev_reg.devices.values()):
+        entries = dr.async_entries_for_config_entry(
+            dev_reg, self.config_entry.entry_id
+        )
+        for entry in entries:
             our_ids = {ident[1] for ident in entry.identifiers if ident[0] == DOMAIN}
             if not our_ids:
                 continue
