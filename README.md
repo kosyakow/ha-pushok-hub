@@ -18,6 +18,7 @@ Home Assistant integration for Pushok Zigbee Hub.
   - Lights with brightness and color temperature
   - Number controls (sliders)
   - Select controls (dropdowns)
+- Alternative mode: standalone MQTT bridge in Zigbee2MQTT-compatible format — see [`mqtt_bridge/`](mqtt_bridge/README.md)
 
 ## Installation
 
@@ -63,6 +64,12 @@ This allows you to access your hub from anywhere without exposing it to the inte
 ## Supported Devices
 
 The integration automatically discovers devices connected to your Pushok Hub and creates appropriate entities based on device capabilities.
+
+## MQTT Bridge (optional)
+
+A standalone MQTT bridge is shipped alongside the integration. It exposes your hub's devices as Zigbee2MQTT-style MQTT topics and supports Home Assistant MQTT auto-discovery, so devices appear in HA via the standard MQTT integration instead of via this custom one.
+
+Consider it if you already use MQTT in your setup, want Zigbee2MQTT-compatible topics for third-party tools, or prefer not to run a custom integration. Full setup and topic reference: [`mqtt_bridge/README.md`](mqtt_bridge/README.md).
 
 ## License
 
