@@ -28,6 +28,7 @@ from .const import (
     CONF_USE_SSL,
     CONF_REMOTE_MODE,
     CONF_HUB_ID,
+    AUTOMATION_ENABLED_FIELD,
     CONF_IMPORT_AUTOMATIONS,
     DEFAULT_IMPORT_AUTOMATIONS,
     DEFAULT_PORT,
@@ -288,22 +289,12 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         self._platform_builders.append((builder, async_add_entities))
 
     async def _load_devices(self) -> None:
-        """Load all zigbee devices and automations from the hub."""
+        """Load all zigbee devices and (enabled) automations from the hub."""
         if not self._client:
             return
 
-        # Zigbee devices (drop the gateway pseudo-device with id "0").
-        zigbee = [d for d in await self._client.get_devices(ENTITY_TYPE_ZIGBEE) if _is_real_device(d)]
-
-        # Automations — only if the user wants them; default on.
-        automations: list[DeviceDescription] = []
-        if self._import_automations:
-            try:
-                automations = await self._client.get_devices(ENTITY_TYPE_AUTOMATION)
-            except Exception as e:
-                _LOGGER.warning("Failed to list automations: %s", e)
-
-        self._devices = {d.id: d for d in zigbee + automations}
+        devices = await self._fetch_all_objects()
+        self._devices = {d.id: d for d in devices}
 
         states: dict[str, DeviceState] = {}
         for device in self._devices.values():
@@ -427,16 +418,54 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
             if device_entry:
                 dev_reg.async_remove_device(device_entry.id)
 
+    async def _is_automation_enabled(self, automation_id: str) -> bool:
+        """Check the automation's "enabled" bit (virtual field 255).
+
+        Mirrors the TG mini-app convention (DeviceCard.jsx:45-50): field 255 of
+        an automation's state is a bool rw flag for whether the automation is
+        currently running. Disabled automations are excluded from HA — there's
+        nothing to control while the automation isn't active.
+        """
+        if not self._client:
+            return False
+        try:
+            state = await self._client.get_state(
+                automation_id,
+                entity_type=ENTITY_TYPE_AUTOMATION,
+                fields=[AUTOMATION_ENABLED_FIELD],
+            )
+        except Exception as e:
+            _LOGGER.debug("Enabled-check failed for automation %s: %s", automation_id, e)
+            return False
+        prop = state.properties.get(AUTOMATION_ENABLED_FIELD)
+        return prop is not None and bool(prop.value)
+
     async def _fetch_all_objects(self) -> list[DeviceDescription]:
-        """Fetch zigbee devices and (if enabled) automations from the hub."""
+        """Fetch zigbee devices and (if enabled) automations from the hub.
+
+        Disabled automations are filtered out — only those with their field-255
+        enable bit set true are returned.
+        """
         if not self._client:
             return []
         items = [d for d in await self._client.get_devices(ENTITY_TYPE_ZIGBEE) if _is_real_device(d)]
         if self._import_automations:
             try:
-                items.extend(await self._client.get_devices(ENTITY_TYPE_AUTOMATION))
+                automations = await self._client.get_devices(ENTITY_TYPE_AUTOMATION)
             except Exception as e:
                 _LOGGER.debug("Failed to list automations: %s", e)
+                automations = []
+            kept = 0
+            for auto in automations:
+                if await self._is_automation_enabled(auto.id):
+                    items.append(auto)
+                    kept += 1
+                else:
+                    _LOGGER.debug("Skipping disabled automation %s", auto.id)
+            _LOGGER.info(
+                "Loaded %d automation(s) from hub (%d total, %d disabled)",
+                kept, len(automations), len(automations) - kept,
+            )
         return items
 
     async def _reload_after_reconnect(self) -> None:
@@ -635,6 +664,30 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         if not device_id:
             _LOGGER.debug("Broadcast without device id")
             return
+
+        # An automation's enable bit (field 255) toggled — add or remove its
+        # HA entities accordingly. We may receive this broadcast for an
+        # automation we don't yet track (just got enabled), so this branch
+        # must run BEFORE the "unknown device" early-return below.
+        if (
+            data.get("type") == ENTITY_TYPE_AUTOMATION
+            and self._import_automations
+            and str(AUTOMATION_ENABLED_FIELD) in props
+        ):
+            enable_prop = props[str(AUTOMATION_ENABLED_FIELD)]
+            if isinstance(enable_prop, dict):
+                wants_enabled = bool(enable_prop.get("value"))
+                currently_known = device_id in self._devices
+                if wants_enabled and not currently_known:
+                    _LOGGER.info("Automation %s enabled — adding entities", device_id)
+                    self.hass.async_create_task(
+                        self._fetch_and_add_device(device_id, ENTITY_TYPE_AUTOMATION)
+                    )
+                    return
+                if not wants_enabled and currently_known:
+                    _LOGGER.info("Automation %s disabled — removing entities", device_id)
+                    self.hass.async_create_task(self.async_remove_device(device_id))
+                    return
 
         if device_id not in self._devices:
             _LOGGER.debug("Update for unknown device: %s", device_id)
