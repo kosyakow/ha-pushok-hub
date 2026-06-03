@@ -116,6 +116,16 @@ def _is_gateway_id(device_id: str | None) -> bool:
 def _is_real_device(device: DeviceDescription) -> bool:
     return not _is_gateway_id(device.id)
 
+
+def registry_identifier(device: DeviceDescription) -> str:
+    """The device_registry identifier suffix for this object.
+
+    Automations are prefixed with "auto_" so their ids can never collide with
+    a zigbee IEEE address. This MUST match what entity.py puts into DeviceInfo,
+    and what async_remove_device / _cleanup_orphan_devices look up by.
+    """
+    return f"auto_{device.id}" if device.is_automation else device.id
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -398,15 +408,23 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         that belonged to it (entity_registry removes them automatically).
         """
         async with self._devices_lock:
-            if device_id not in self._devices:
+            device = self._devices.get(device_id)
+            if device is None:
                 return
 
             _LOGGER.info("Removing device %s", device_id)
 
+            # Compute the registry identifier before dropping the device, since
+            # automations need the "auto_" prefix to be found in the registry.
+            reg_id = registry_identifier(device)
+
             self._devices.pop(device_id, None)
             self._formats.pop(device_id, None)
             self._attributes.pop(device_id, None)
-            # Adapters are shared across devices and stay cached.
+            # Drop the per-automation pseudo-adapter; zigbee adapters are shared
+            # across devices and stay cached.
+            if device.is_automation:
+                self._adapters.pop(f"_automation_{device_id}", None)
 
             if self.data and device_id in self.data:
                 new_data = dict(self.data)
@@ -414,7 +432,7 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
                 self.async_set_updated_data(new_data)
 
             dev_reg = dr.async_get(self.hass)
-            device_entry = dev_reg.async_get_device(identifiers={(DOMAIN, device_id)})
+            device_entry = dev_reg.async_get_device(identifiers={(DOMAIN, reg_id)})
             if device_entry:
                 dev_reg.async_remove_device(device_entry.id)
 
@@ -556,7 +574,9 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         must not touch the other hub's devices.
         """
         dev_reg = dr.async_get(self.hass)
-        known_ids = set(self._devices.keys())
+        # Registry identifiers carry the "auto_" prefix for automations, so the
+        # known set must be built the same way (not from raw device ids).
+        known_ids = {registry_identifier(d) for d in self._devices.values()}
         entries = dr.async_entries_for_config_entry(
             dev_reg, self.config_entry.entry_id
         )

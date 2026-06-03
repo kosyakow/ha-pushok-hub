@@ -9,7 +9,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api.models import AdapterParam, DeviceAdapter, DeviceDescription
 from .const import DOMAIN, UNIT_MAPPING
-from .coordinator import PushokHubCoordinator
+from .coordinator import PushokHubCoordinator, registry_identifier
 
 
 class PushokHubEntity(CoordinatorEntity[PushokHubCoordinator]):
@@ -43,10 +43,9 @@ class PushokHubEntity(CoordinatorEntity[PushokHubCoordinator]):
         if adapter:
             self._adapter_param = adapter.get_param_by_address(field_id)
 
-        # Unique ID: domain_device-ieee_field-id (automations get "auto_" prefix
-        # so their entity ids can't collide with zigbee ones).
-        id_prefix = "auto_" if device.is_automation else ""
-        self._attr_unique_id = f"{DOMAIN}_{id_prefix}{device.id}_{field_id}"
+        # Unique ID: domain_<registry-id>_field-id. registry_identifier() adds
+        # the "auto_" prefix for automations so ids can't collide with zigbee.
+        self._attr_unique_id = f"{DOMAIN}_{registry_identifier(device)}_{field_id}"
 
         # Entity name - prefer adapter param name
         if name_suffix:
@@ -72,7 +71,7 @@ class PushokHubEntity(CoordinatorEntity[PushokHubCoordinator]):
             # prefixed so it can never collide with a zigbee IEEE address.
             name = attrs.name if attrs and attrs.name else f"Automation {self._device.id}"
             return DeviceInfo(
-                identifiers={(DOMAIN, f"auto_{self._device.id}")},
+                identifiers={(DOMAIN, registry_identifier(self._device))},
                 name=name,
                 manufacturer="Pushok",
                 model="Automation",
