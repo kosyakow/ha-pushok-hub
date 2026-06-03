@@ -445,6 +445,14 @@ class PushokMqttBridge:
         if "/bridge/" in topic or topic.endswith("/availability"):
             return
 
+        # A retained message on a command/state topic is our own mirrored state
+        # being replayed by the broker (e.g. on reconnect/restart), not a user
+        # command. Real commands from HA arrive non-retained. Without this guard
+        # the broker's replay of our retained state gets echoed straight back to
+        # the hub as setState on every startup.
+        if message.retain:
+            return
+
         parts = topic.split("/")
         if len(parts) < 2 or parts[0] != self.base_topic:
             return
