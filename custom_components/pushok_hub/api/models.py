@@ -26,9 +26,9 @@ class PropertyValue:
 
 @dataclass
 class DeviceDescription:
-    """Represents a Zigbee device description."""
+    """Represents an object exposed by the hub — a zigbee device or an automation."""
 
-    id: str  # IEEE address
+    id: str  # IEEE address for zigbee, automation id for automations
     manufacturer: str
     model: str
     network_id: int
@@ -40,9 +40,12 @@ class DeviceDescription:
     attr_crc: int | None = None
     adapter_crc: int | None = None
     error: str | None = None
+    # "zigbee" or "automation" — set by the loader since the per-object dict
+    # from listObjects doesn't carry the type itself.
+    entity_type: str = "zigbee"
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> DeviceDescription:
+    def from_dict(cls, data: dict[str, Any], entity_type: str = "zigbee") -> DeviceDescription:
         """Create DeviceDescription from API response."""
         return cls(
             id=data["id"],
@@ -57,7 +60,12 @@ class DeviceDescription:
             attr_crc=data.get("attr"),
             adapter_crc=data.get("adptr-crc"),
             error=data.get("error"),
+            entity_type=entity_type,
         )
+
+    @property
+    def is_automation(self) -> bool:
+        return self.entity_type == "automation"
 
 
 @dataclass
@@ -67,13 +75,17 @@ class DeviceAttributes:
     name: str | None = None
     tags: list[str] = field(default_factory=list)
     params_visibility: dict[int, bool] = field(default_factory=dict)
+    # Automations stash their State descriptors here (camelCase or lowercase
+    # depending on firmware). We keep raw dicts; conversion to AdapterParam
+    # happens in the coordinator.
+    states: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DeviceAttributes:
         """Create DeviceAttributes from API response."""
         # Handle case where data might not be a dict
         if not isinstance(data, dict):
-            return cls(name=None, tags=[], params_visibility={})
+            return cls(name=None, tags=[], params_visibility={}, states=[])
 
         visibility = {}
         if "paramsVisibility" in data:
@@ -82,10 +94,15 @@ class DeviceAttributes:
                 for k, v in pv.items():
                     visibility[int(k)] = v
 
+        raw_states = data.get("States") or data.get("states") or []
+        if not isinstance(raw_states, list):
+            raw_states = []
+
         return cls(
             name=data.get("name"),
             tags=data.get("tags", []),
             params_visibility=visibility,
+            states=raw_states,
         )
 
     def to_dict(self) -> dict[str, Any]:

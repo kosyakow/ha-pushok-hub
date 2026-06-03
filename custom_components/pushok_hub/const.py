@@ -10,6 +10,8 @@ CONF_PORT: Final = "port"
 CONF_USE_SSL: Final = "use_ssl"
 CONF_REMOTE_MODE: Final = "remote_mode"
 CONF_HUB_ID: Final = "hub_id"
+CONF_IMPORT_AUTOMATIONS: Final = "import_automations"
+DEFAULT_IMPORT_AUTOMATIONS: Final = True
 
 # Defaults
 DEFAULT_PORT: Final = 3001

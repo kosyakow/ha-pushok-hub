@@ -13,7 +13,14 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .api import PushokHubClient, PushokAuth
-from .api.models import DeviceAdapter, DeviceAttributes, DeviceDescription, DeviceFormat, DeviceState
+from .api.models import (
+    AdapterParam,
+    DeviceAdapter,
+    DeviceAttributes,
+    DeviceDescription,
+    DeviceFormat,
+    DeviceState,
+)
 from .const import (
     DOMAIN,
     CONF_HOST,
@@ -21,9 +28,12 @@ from .const import (
     CONF_USE_SSL,
     CONF_REMOTE_MODE,
     CONF_HUB_ID,
+    CONF_IMPORT_AUTOMATIONS,
+    DEFAULT_IMPORT_AUTOMATIONS,
     DEFAULT_PORT,
     DEFAULT_USE_SSL,
     DEVICE_LIST_POLL_INTERVAL,
+    ENTITY_TYPE_AUTOMATION,
     ENTITY_TYPE_ZIGBEE,
     EVT_OBJECT_ADD,
     EVT_OBJECT_REMOVE,
@@ -32,6 +42,65 @@ from .const import (
     STORAGE_KEY_PRIVATE_KEY,
     STORAGE_KEY_USER_ID,
 )
+
+# Maps an automation state's datatype string to (param_type, min, max).
+# Mirrors DATATYPE_INFO from iot-gate/tg-miniapp/src/components/DeviceCard.jsx.
+_AUTOMATION_DATATYPES: dict[str, tuple[str, int | None, int | None]] = {
+    "BOOL":   ("bool",  0, 1),
+    "INT8":   ("int",  -128, 127),
+    "INT16":  ("int",  -32768, 32767),
+    "INT32":  ("int",  -2147483648, 2147483647),
+    "INT64":  ("int",  None, None),
+    "UINT8":  ("int",  0, 255),
+    "UINT16": ("int",  0, 65535),
+    "UINT32": ("int",  0, 4294967295),
+    "UINT64": ("int",  0, None),
+    "FLOAT":  ("float", None, None),
+}
+
+
+def _build_automation_pseudo_adapter(
+    automation_id: str, attrs: DeviceAttributes
+) -> DeviceAdapter:
+    """Build a synthetic DeviceAdapter from an automation's local States.
+
+    Automations don't ship an adapter through getAdapter the way zigbee devices
+    do — the State descriptors live in their attributes. We mirror what the TG
+    mini-app does (DeviceCard.jsx:42-69) so every platform can keep using the
+    existing AdapterParam-driven entity builders.
+    """
+    params: list[AdapterParam] = []
+    for st in attrs.states:
+        if not isinstance(st, dict) or st.get("type") != "local":
+            continue
+        local_id = st.get("localId")
+        if local_id is None:
+            continue
+        datatype = (st.get("datatype") or "").upper()
+        param_type, min_v, max_v = _AUTOMATION_DATATYPES.get(
+            datatype, ("int", None, None)
+        )
+        writable = bool(st.get("write"))
+        name = st.get("name") or f"state_{local_id}"
+        params.append(
+            AdapterParam(
+                address=int(local_id),
+                access="rw" if writable else "r",
+                param_type=param_type,
+                name=name,
+                description=st.get("description"),
+                min_value=min_v,
+                max_value=max_v,
+                view_params={"type": "switch" if param_type == "bool" else "value"},
+            )
+        )
+    return DeviceAdapter(
+        driver=f"_automation_{automation_id}",
+        crc=0,
+        description="Pushok automation",
+        device_type="automation",
+        params=params,
+    )
 
 PlatformBuilder = Callable[["PushokHubCoordinator", DeviceDescription], list]
 
@@ -83,6 +152,13 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         # Serialize add/remove against concurrent broadcasts and the periodic poller
         self._devices_lock = asyncio.Lock()
 
+        # Whether to fetch automations alongside zigbee devices. Pulled from
+        # config entry options at setup time; default on for new installs.
+        self._import_automations: bool = entry.options.get(
+            CONF_IMPORT_AUTOMATIONS,
+            entry.data.get(CONF_IMPORT_AUTOMATIONS, DEFAULT_IMPORT_AUTOMATIONS),
+        )
+
     @property
     def client(self) -> PushokHubClient | None:
         """Get the API client."""
@@ -111,14 +187,17 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
     def get_adapter_for_device(self, device_id: str) -> DeviceAdapter | None:
         """Get adapter for a specific device by its ID.
 
-        Args:
-            device_id: Device ID (IEEE address)
-
-        Returns:
-            DeviceAdapter if found, None otherwise
+        For zigbee devices the adapter is keyed by driver name and shared
+        across devices with the same driver. For automations we synthesize
+        a per-automation pseudo-adapter (see _build_automation_pseudo_adapter)
+        and key it by f"_automation_{id}".
         """
         device = self._devices.get(device_id)
-        if device and device.driver:
+        if not device:
+            return None
+        if device.is_automation:
+            return self._adapters.get(f"_automation_{device_id}")
+        if device.driver:
             return self._adapters.get(device.driver)
         return None
 
@@ -209,72 +288,33 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         self._platform_builders.append((builder, async_add_entities))
 
     async def _load_devices(self) -> None:
-        """Load all devices from the hub."""
+        """Load all zigbee devices and automations from the hub."""
         if not self._client:
             return
 
-        # Get device list (drop the gateway pseudo-device with id "0")
-        devices = [d for d in await self._client.get_devices(ENTITY_TYPE_ZIGBEE) if _is_real_device(d)]
-        self._devices = {d.id: d for d in devices}
+        # Zigbee devices (drop the gateway pseudo-device with id "0").
+        zigbee = [d for d in await self._client.get_devices(ENTITY_TYPE_ZIGBEE) if _is_real_device(d)]
 
-        # Load state, format, and attributes for each device
+        # Automations — only if the user wants them; default on.
+        automations: list[DeviceDescription] = []
+        if self._import_automations:
+            try:
+                automations = await self._client.get_devices(ENTITY_TYPE_AUTOMATION)
+            except Exception as e:
+                _LOGGER.warning("Failed to list automations: %s", e)
+
+        self._devices = {d.id: d for d in zigbee + automations}
+
         states: dict[str, DeviceState] = {}
-
-        for device_id, device in self._devices.items():
-            _LOGGER.debug(
-                "Processing device %s: model=%s, driver=%s",
-                device_id,
-                device.model,
-                device.driver,
-            )
-
-            # Load state
-            try:
-                state = await self._client.get_state(device_id)
-                states[device_id] = state
-            except Exception as e:
-                _LOGGER.warning("Failed to load state for %s: %s", device_id, e)
-
-            # Load format
-            try:
-                fmt = await self._client.get_format(device_id)
-                self._formats[device_id] = fmt
-            except Exception as e:
-                _LOGGER.warning("Failed to load format for %s: %s", device_id, e)
-
-            # Load attributes
-            try:
-                attrs = await self._client.get_attributes(device_id)
-                self._attributes[device_id] = attrs
-                _LOGGER.debug(
-                    "Loaded attributes for %s: name=%s",
-                    device_id,
-                    attrs.name,
-                )
-            except Exception as e:
-                _LOGGER.debug("No attributes for %s: %s", device_id, e)
-
-            # Load adapter if device has a driver and not already cached
-            if device.driver and device.driver not in self._adapters:
-                try:
-                    adapter = await self._client.get_adapter(device.driver)
-                    self._adapters[device.driver] = adapter
-                    _LOGGER.debug(
-                        "Loaded adapter for driver %s: %s",
-                        device.driver,
-                        adapter.description,
-                    )
-                except Exception as e:
-                    _LOGGER.warning(
-                        "Failed to load adapter for driver %s: %s",
-                        device.driver,
-                        e,
-                    )
+        for device in self._devices.values():
+            state = await self._load_single_device(device)
+            if state is not None:
+                states[device.id] = state
 
         self.async_set_updated_data(states)
 
     async def _load_single_device(self, device: DeviceDescription) -> DeviceState | None:
-        """Load state/format/attributes/adapter for a single device.
+        """Load state/format/attributes/adapter for a single device or automation.
 
         Returns the device's state (or None if it couldn't be loaded). Updates
         self._formats, self._attributes, self._adapters as side effects.
@@ -282,23 +322,40 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         if not self._client:
             return None
 
+        _LOGGER.debug(
+            "Processing %s %s: model=%s, driver=%s",
+            device.entity_type, device.id, device.model, device.driver,
+        )
+
         state: DeviceState | None = None
         try:
-            state = await self._client.get_state(device.id)
+            state = await self._client.get_state(device.id, entity_type=device.entity_type)
         except Exception as e:
             _LOGGER.warning("Failed to load state for %s: %s", device.id, e)
 
-        try:
-            self._formats[device.id] = await self._client.get_format(device.id)
-        except Exception as e:
-            _LOGGER.warning("Failed to load format for %s: %s", device.id, e)
+        # Format only exists for zigbee devices.
+        if not device.is_automation:
+            try:
+                self._formats[device.id] = await self._client.get_format(device.id)
+            except Exception as e:
+                _LOGGER.warning("Failed to load format for %s: %s", device.id, e)
 
         try:
-            self._attributes[device.id] = await self._client.get_attributes(device.id)
+            self._attributes[device.id] = await self._client.get_attributes(
+                device.id, entity_type=device.entity_type
+            )
         except Exception as e:
             _LOGGER.debug("No attributes for %s: %s", device.id, e)
 
-        if device.driver and device.driver not in self._adapters:
+        if device.is_automation:
+            # Automations don't expose an adapter through getAdapter — synthesize
+            # one from the State descriptors in their attributes.
+            attrs = self._attributes.get(device.id)
+            if attrs is not None:
+                self._adapters[f"_automation_{device.id}"] = (
+                    _build_automation_pseudo_adapter(device.id, attrs)
+                )
+        elif device.driver and device.driver not in self._adapters:
             try:
                 self._adapters[device.driver] = await self._client.get_adapter(device.driver)
             except Exception as e:
@@ -370,6 +427,18 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
             if device_entry:
                 dev_reg.async_remove_device(device_entry.id)
 
+    async def _fetch_all_objects(self) -> list[DeviceDescription]:
+        """Fetch zigbee devices and (if enabled) automations from the hub."""
+        if not self._client:
+            return []
+        items = [d for d in await self._client.get_devices(ENTITY_TYPE_ZIGBEE) if _is_real_device(d)]
+        if self._import_automations:
+            try:
+                items.extend(await self._client.get_devices(ENTITY_TYPE_AUTOMATION))
+            except Exception as e:
+                _LOGGER.debug("Failed to list automations: %s", e)
+        return items
+
     async def _reload_after_reconnect(self) -> None:
         """Reload devices after a reconnect, applying any add/remove diff.
 
@@ -383,7 +452,7 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         old_ids = set(self._devices.keys())
 
         try:
-            devices = [d for d in await self._client.get_devices(ENTITY_TYPE_ZIGBEE) if _is_real_device(d)]
+            devices = await self._fetch_all_objects()
         except Exception as e:
             _LOGGER.warning("Failed to fetch device list on reconnect: %s", e)
             return
@@ -398,7 +467,7 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         for device in kept_devices:
             self._devices[device.id] = device
             try:
-                state = await self._client.get_state(device.id)
+                state = await self._client.get_state(device.id, entity_type=device.entity_type)
                 new_data[device.id] = state
             except Exception as e:
                 _LOGGER.debug("State refresh failed for %s: %s", device.id, e)
@@ -422,7 +491,7 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
             return
 
         try:
-            devices = [d for d in await self._client.get_devices(ENTITY_TYPE_ZIGBEE) if _is_real_device(d)]
+            devices = await self._fetch_all_objects()
         except Exception as e:
             _LOGGER.debug("Periodic device list refresh failed: %s", e)
             return
@@ -510,24 +579,27 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
 
     @callback
     def _handle_object_add(self, data: dict[str, Any]) -> None:
-        """Handle object_add broadcast: a new device was paired on the hub."""
+        """Handle object_add broadcast: a new device or automation appeared."""
         device_id = data.get("id")
         if not device_id or _is_gateway_id(device_id):
             return
-        if data.get("type") != ENTITY_TYPE_ZIGBEE:
+        entity_type = data.get("type")
+        if entity_type not in (ENTITY_TYPE_ZIGBEE, ENTITY_TYPE_AUTOMATION):
+            return
+        if entity_type == ENTITY_TYPE_AUTOMATION and not self._import_automations:
             return
         if device_id in self._devices:
             return
 
-        # Need the full device description; re-fetch the device list to find it.
-        self.hass.async_create_task(self._fetch_and_add_device(device_id))
+        # Need the full device description; re-fetch the matching list.
+        self.hass.async_create_task(self._fetch_and_add_device(device_id, entity_type))
 
-    async def _fetch_and_add_device(self, device_id: str) -> None:
+    async def _fetch_and_add_device(self, device_id: str, entity_type: str) -> None:
         """Look up a newly-added device on the hub and register it locally."""
         if not self._client:
             return
         try:
-            devices = await self._client.get_devices(ENTITY_TYPE_ZIGBEE)
+            devices = await self._client.get_devices(entity_type)
         except Exception as e:
             _LOGGER.warning("Failed to fetch devices after object_add: %s", e)
             return
@@ -537,7 +609,7 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
                 await self.async_add_device(device)
                 return
 
-        _LOGGER.debug("object_add for %s but device not in list yet", device_id)
+        _LOGGER.debug("object_add for %s but %s not in list yet", device_id, entity_type)
 
     @callback
     def _handle_object_remove(self, data: dict[str, Any]) -> None:
@@ -657,15 +729,12 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
     ) -> bool:
         """Set device state.
 
-        Args:
-            device_id: Device ID
-            field: Field ID
-            value: Value to set
-
-        Returns:
-            True if successful
+        Routes the request with the correct entity_type so set_state goes to
+        the right object (zigbee or automation).
         """
         if not self._client:
             return False
 
-        return await self._client.set_state(device_id, field, value)
+        device = self._devices.get(device_id)
+        entity_type = device.entity_type if device else ENTITY_TYPE_ZIGBEE
+        return await self._client.set_state(device_id, field, value, entity_type=entity_type)
