@@ -11,6 +11,7 @@ MQTT bridge for Pushok Zigbee Hub in Zigbee2MQTT-compatible format.
 - Multiple command formats supported
 - Home Assistant MQTT auto-discovery support
 - Supports all device types (sensors, switches, numbers, selects)
+- Exposes hub automations: the local `State` parameters of every enabled automation are published as their own MQTT/discovery entities (disabled automations are skipped, enabling/disabling reflects live)
 - Automatic reconnection on hub connection loss
 
 ## MQTT Topics

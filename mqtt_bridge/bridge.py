@@ -16,6 +16,7 @@ sys.path.insert(0, str(_root_path))
 
 from custom_components.pushok_hub.api.client import PushokHubClient
 from custom_components.pushok_hub.api.auth import PushokAuth
+from custom_components.pushok_hub.api.automation import build_automation_pseudo_adapter
 from custom_components.pushok_hub.api.models import (
     AdapterParam,
     DeviceAdapter,
@@ -24,7 +25,12 @@ from custom_components.pushok_hub.api.models import (
     DeviceState,
     PropertyValue,
 )
-from custom_components.pushok_hub.const import UNIT_MAPPING
+from custom_components.pushok_hub.const import (
+    AUTOMATION_ENABLED_FIELD,
+    ENTITY_TYPE_AUTOMATION,
+    ENTITY_TYPE_ZIGBEE,
+    UNIT_MAPPING,
+)
 
 import paho.mqtt.client as mqtt
 
@@ -76,6 +82,18 @@ class PushokMqttBridge:
     def base_topic(self) -> str:
         """Get base MQTT topic."""
         return self._config.mqtt.base_topic
+
+    def _get_adapter(self, device: DeviceDescription) -> DeviceAdapter | None:
+        """Resolve the adapter for a device or automation.
+
+        Zigbee adapters are cached by driver name; automations use a synthetic
+        adapter keyed by "_automation_<id>".
+        """
+        if device.is_automation:
+            return self._adapters.get(f"_automation_{device.id}")
+        if device.driver:
+            return self._adapters.get(device.driver)
+        return None
 
     async def start(self) -> None:
         """Start the bridge."""
@@ -159,37 +177,94 @@ class PushokMqttBridge:
         # Load devices
         await self._load_devices()
 
+    async def _is_automation_enabled(self, automation_id: str) -> bool:
+        """Check the automation's enable bit (virtual field 255).
+
+        Disabled automations are skipped — nothing to publish while they're not
+        running. Mirrors the integration's behavior.
+        """
+        if not self._hub_client:
+            return False
+        try:
+            state = await self._hub_client.get_state(
+                automation_id,
+                entity_type=ENTITY_TYPE_AUTOMATION,
+                fields=[AUTOMATION_ENABLED_FIELD],
+            )
+        except Exception as e:
+            _LOGGER.debug("Enabled-check failed for automation %s: %s", automation_id, e)
+            return False
+        prop = state.properties.get(AUTOMATION_ENABLED_FIELD)
+        return prop is not None and bool(prop.value)
+
+    async def _fetch_all_objects(self) -> list[DeviceDescription]:
+        """Fetch zigbee devices and enabled automations from the hub."""
+        if not self._hub_client:
+            return []
+        items = [
+            d for d in await self._hub_client.get_devices(ENTITY_TYPE_ZIGBEE)
+            if not _is_gateway_id(d.id)
+        ]
+        try:
+            automations = await self._hub_client.get_devices(ENTITY_TYPE_AUTOMATION)
+        except Exception as e:
+            _LOGGER.debug("Failed to list automations: %s", e)
+            automations = []
+        kept = 0
+        for auto in automations:
+            if await self._is_automation_enabled(auto.id):
+                items.append(auto)
+                kept += 1
+        if automations:
+            _LOGGER.info(
+                "Loaded %d automation(s) (%d total, %d disabled)",
+                kept, len(automations), len(automations) - kept,
+            )
+        return items
+
     async def _load_devices(self) -> None:
-        """Load all devices from hub."""
+        """Load all zigbee devices and enabled automations from hub."""
         if not self._hub_client:
             return
 
-        devices = [d for d in await self._hub_client.get_devices("zigbee") if not _is_gateway_id(d.id)]
+        devices = await self._fetch_all_objects()
         self._devices = {d.id: d for d in devices}
-        _LOGGER.info("Loaded %d devices", len(self._devices))
+        _LOGGER.info("Loaded %d objects", len(self._devices))
 
         for device_id, device in self._devices.items():
-            _LOGGER.debug("Processing device %s: %s", device_id, device.model)
+            _LOGGER.debug("Processing %s %s: %s", device.entity_type, device_id, device.model)
             await self._load_single_device(device)
 
     async def _load_single_device(self, device: DeviceDescription) -> None:
-        """Load state/attributes/adapter for a single device."""
+        """Load state/attributes/adapter for a single device or automation."""
         if not self._hub_client:
             return
 
         try:
-            state = await self._hub_client.get_state(device.id)
+            state = await self._hub_client.get_state(
+                device.id, entity_type=device.entity_type
+            )
             self._states[device.id] = state
         except Exception as e:
             _LOGGER.warning("Failed to load state for %s: %s", device.id, e)
 
         try:
-            attrs = await self._hub_client.get_attributes(device.id)
+            attrs = await self._hub_client.get_attributes(
+                device.id, entity_type=device.entity_type
+            )
             self._attributes[device.id] = attrs
         except Exception as e:
             _LOGGER.debug("No attributes for %s: %s", device.id, e)
 
-        if device.driver and device.driver not in self._adapters:
+        if device.is_automation:
+            # Automations have no adapter via getAdapter — synthesize from the
+            # State descriptors in attributes.
+            attrs = self._attributes.get(device.id)
+            if attrs is not None:
+                self._adapters[f"_automation_{device.id}"] = (
+                    build_automation_pseudo_adapter(device.id, attrs)
+                )
+        elif device.driver and device.driver not in self._adapters:
             try:
                 adapter = await self._hub_client.get_adapter(device.driver)
                 self._adapters[device.driver] = adapter
@@ -382,7 +457,7 @@ class PushokMqttBridge:
             prop_name = parts[2]
             device = self._devices.get(device_id)
             if device:
-                adapter = self._adapters.get(device.driver) if device.driver else None
+                adapter = self._get_adapter(device)
                 if adapter:
                     param = self._get_param_by_name(adapter, prop_name)
                     if param and param.is_writable:
@@ -400,7 +475,7 @@ class PushokMqttBridge:
             if device and payload:
                 try:
                     data = json.loads(payload)
-                    adapter = self._adapters.get(device.driver) if device.driver else None
+                    adapter = self._get_adapter(device)
                     if adapter and self._has_writable_params(adapter, data):
                         _LOGGER.debug("Processing command from main topic: %s", topic)
                         if self._loop:
@@ -437,14 +512,15 @@ class PushokMqttBridge:
             )
         elif evt == "object_add":
             device_id = data.get("id")
+            obj_type = data.get("type")
             if (
                 device_id
                 and not _is_gateway_id(device_id)
-                and data.get("type") == "zigbee"
+                and obj_type in (ENTITY_TYPE_ZIGBEE, ENTITY_TYPE_AUTOMATION)
                 and device_id not in self._devices
             ):
                 asyncio.run_coroutine_threadsafe(
-                    self._handle_object_add(device_id), self._loop
+                    self._handle_object_add(device_id, obj_type), self._loop
                 )
         elif evt == "object_remove":
             device_id = data.get("id")
@@ -453,20 +529,26 @@ class PushokMqttBridge:
                     self._handle_object_remove(device_id), self._loop
                 )
 
-    async def _handle_object_add(self, device_id: str) -> None:
-        """Fetch a newly-added device and publish discovery/state for it."""
+    async def _handle_object_add(self, device_id: str, entity_type: str) -> None:
+        """Fetch a newly-added device/automation and publish it.
+
+        For automations, only add it if its enable bit is set.
+        """
         if not self._hub_client or _is_gateway_id(device_id):
             return
+        if entity_type == ENTITY_TYPE_AUTOMATION and not await self._is_automation_enabled(device_id):
+            _LOGGER.debug("object_add for disabled automation %s — skipping", device_id)
+            return
         try:
-            devices = await self._hub_client.get_devices("zigbee")
+            devices = await self._hub_client.get_devices(entity_type)
         except Exception as e:
-            _LOGGER.warning("Failed to fetch devices after object_add: %s", e)
+            _LOGGER.warning("Failed to fetch objects after object_add: %s", e)
             return
         for device in devices:
             if device.id == device_id:
                 await self._add_device(device)
                 return
-        _LOGGER.debug("object_add for %s but device not in list yet", device_id)
+        _LOGGER.debug("object_add for %s but %s not in list yet", device_id, entity_type)
 
     async def _add_device(self, device: DeviceDescription) -> None:
         """Add a device locally and publish its MQTT discovery + initial state."""
@@ -512,7 +594,7 @@ class PushokMqttBridge:
             if not self._hub_connected or not self._hub_client:
                 continue
             try:
-                devices = [d for d in await self._hub_client.get_devices("zigbee") if not _is_gateway_id(d.id)]
+                devices = await self._fetch_all_objects()
             except Exception as e:
                 _LOGGER.debug("Periodic device list refresh failed: %s", e)
                 continue
@@ -537,7 +619,30 @@ class PushokMqttBridge:
         device_id = data.get("id")
         props = data.get("props", {})
 
-        if not device_id or device_id not in self._devices:
+        if not device_id:
+            return
+
+        # An automation's enable bit (field 255) toggled — add or remove it.
+        # Runs before the "unknown device" guard so we react to enable events
+        # for automations we don't yet track.
+        if (
+            data.get("type") == ENTITY_TYPE_AUTOMATION
+            and str(AUTOMATION_ENABLED_FIELD) in props
+        ):
+            enable_prop = props[str(AUTOMATION_ENABLED_FIELD)]
+            if isinstance(enable_prop, dict):
+                wants_enabled = bool(enable_prop.get("value"))
+                known = device_id in self._devices
+                if wants_enabled and not known:
+                    _LOGGER.info("Automation %s enabled — adding", device_id)
+                    await self._handle_object_add(device_id, ENTITY_TYPE_AUTOMATION)
+                    return
+                if not wants_enabled and known:
+                    _LOGGER.info("Automation %s disabled — removing", device_id)
+                    await self._handle_object_remove(device_id)
+                    return
+
+        if device_id not in self._devices:
             return
 
         device = self._devices[device_id]
@@ -566,7 +671,7 @@ class PushokMqttBridge:
             _LOGGER.warning("Invalid JSON payload: %s", payload)
             return
 
-        adapter = self._adapters.get(device.driver) if device.driver else None
+        adapter = self._get_adapter(device)
 
         for key, value in data.items():
             param = self._get_param_by_name(adapter, key)
@@ -576,7 +681,10 @@ class PushokMqttBridge:
                 _LOGGER.info("Setting %s.%s (%d) = %s (raw: %s)",
                            device_id, key, param.address, value, converted_value)
                 if self._hub_client:
-                    await self._hub_client.set_state(device.id, param.address, converted_value)
+                    await self._hub_client.set_state(
+                        device.id, param.address, converted_value,
+                        entity_type=device.entity_type,
+                    )
 
     async def _handle_property_command(self, device_id: str, prop_name: str, payload: str) -> None:
         """Handle command for individual property topic."""
@@ -585,7 +693,7 @@ class PushokMqttBridge:
             _LOGGER.warning("Device not found: %s", device_id)
             return
 
-        adapter = self._adapters.get(device.driver) if device.driver else None
+        adapter = self._get_adapter(device)
         param = self._get_param_by_name(adapter, prop_name)
 
         if not param:
@@ -604,7 +712,10 @@ class PushokMqttBridge:
                      device_id, prop_name, param.address, value, converted_value)
 
         if self._hub_client:
-            await self._hub_client.set_state(device.id, param.address, converted_value)
+            await self._hub_client.set_state(
+                device.id, param.address, converted_value,
+                entity_type=device.entity_type,
+            )
 
     def _parse_property_value(self, payload: str, param: AdapterParam) -> Any:
         """Parse property value from string payload."""
@@ -767,7 +878,7 @@ class PushokMqttBridge:
         """Publish device list."""
         devices_list = []
         for device_id, device in self._devices.items():
-            adapter = self._adapters.get(device.driver) if device.driver else None
+            adapter = self._get_adapter(device)
             devices_list.append({
                 "ieee_address": device_id,
                 "friendly_name": self._get_friendly_name(device),
@@ -797,7 +908,7 @@ class PushokMqttBridge:
         if not state:
             return
 
-        adapter = self._adapters.get(device.driver) if device.driver else None
+        adapter = self._get_adapter(device)
         friendly_name = self._get_friendly_name(device)
         device_id = device.id
 
@@ -820,7 +931,9 @@ class PushokMqttBridge:
 
         # Add device metadata
         payload["name"] = friendly_name
-        payload["linkquality"] = device.lqi
+        # linkquality is a zigbee radio metric; automations don't have it.
+        if not device.is_automation:
+            payload["linkquality"] = device.lqi
 
         # Use device_id in topic (more stable than friendly_name)
         topic = f"{self.base_topic}/{device_id}"
@@ -873,7 +986,7 @@ class PushokMqttBridge:
         """
         prefix = self._config.mqtt.discovery_prefix
         device_id = device.id
-        adapter = self._adapters.get(device.driver) if device.driver else None
+        adapter = self._get_adapter(device)
         friendly_name = self._get_friendly_name(device)
         state = self._states.get(device_id)
 
@@ -883,8 +996,8 @@ class PushokMqttBridge:
         device_info = {
             "identifiers": [device_id],
             "name": friendly_name,
-            "model": device.model,
-            "manufacturer": device.manufacturer,
+            "model": "Automation" if device.is_automation else device.model,
+            "manufacturer": "Pushok" if device.is_automation else device.manufacturer,
         }
         if adapter.url:
             device_info["configuration_url"] = adapter.url

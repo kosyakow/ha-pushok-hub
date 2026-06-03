@@ -13,8 +13,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .api import PushokHubClient, PushokAuth
+from .api.automation import build_automation_pseudo_adapter
 from .api.models import (
-    AdapterParam,
     DeviceAdapter,
     DeviceAttributes,
     DeviceDescription,
@@ -43,65 +43,6 @@ from .const import (
     STORAGE_KEY_PRIVATE_KEY,
     STORAGE_KEY_USER_ID,
 )
-
-# Maps an automation state's datatype string to (param_type, min, max).
-# Mirrors DATATYPE_INFO from iot-gate/tg-miniapp/src/components/DeviceCard.jsx.
-_AUTOMATION_DATATYPES: dict[str, tuple[str, int | None, int | None]] = {
-    "BOOL":   ("bool",  0, 1),
-    "INT8":   ("int",  -128, 127),
-    "INT16":  ("int",  -32768, 32767),
-    "INT32":  ("int",  -2147483648, 2147483647),
-    "INT64":  ("int",  None, None),
-    "UINT8":  ("int",  0, 255),
-    "UINT16": ("int",  0, 65535),
-    "UINT32": ("int",  0, 4294967295),
-    "UINT64": ("int",  0, None),
-    "FLOAT":  ("float", None, None),
-}
-
-
-def _build_automation_pseudo_adapter(
-    automation_id: str, attrs: DeviceAttributes
-) -> DeviceAdapter:
-    """Build a synthetic DeviceAdapter from an automation's local States.
-
-    Automations don't ship an adapter through getAdapter the way zigbee devices
-    do — the State descriptors live in their attributes. We mirror what the TG
-    mini-app does (DeviceCard.jsx:42-69) so every platform can keep using the
-    existing AdapterParam-driven entity builders.
-    """
-    params: list[AdapterParam] = []
-    for st in attrs.states:
-        if not isinstance(st, dict) or st.get("type") != "local":
-            continue
-        local_id = st.get("localId")
-        if local_id is None:
-            continue
-        datatype = (st.get("datatype") or "").upper()
-        param_type, min_v, max_v = _AUTOMATION_DATATYPES.get(
-            datatype, ("int", None, None)
-        )
-        writable = bool(st.get("write"))
-        name = st.get("name") or f"state_{local_id}"
-        params.append(
-            AdapterParam(
-                address=int(local_id),
-                access="rw" if writable else "r",
-                param_type=param_type,
-                name=name,
-                description=st.get("description"),
-                min_value=min_v,
-                max_value=max_v,
-                view_params={"type": "switch" if param_type == "bool" else "value"},
-            )
-        )
-    return DeviceAdapter(
-        driver=f"_automation_{automation_id}",
-        crc=0,
-        description="Pushok automation",
-        device_type="automation",
-        params=params,
-    )
 
 PlatformBuilder = Callable[["PushokHubCoordinator", DeviceDescription], list]
 
@@ -200,7 +141,7 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
 
         For zigbee devices the adapter is keyed by driver name and shared
         across devices with the same driver. For automations we synthesize
-        a per-automation pseudo-adapter (see _build_automation_pseudo_adapter)
+        a per-automation pseudo-adapter (see build_automation_pseudo_adapter)
         and key it by f"_automation_{id}".
         """
         device = self._devices.get(device_id)
@@ -354,7 +295,7 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
             attrs = self._attributes.get(device.id)
             if attrs is not None:
                 self._adapters[f"_automation_{device.id}"] = (
-                    _build_automation_pseudo_adapter(device.id, attrs)
+                    build_automation_pseudo_adapter(device.id, attrs)
                 )
         elif device.driver and device.driver not in self._adapters:
             try:
