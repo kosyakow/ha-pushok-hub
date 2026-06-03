@@ -76,6 +76,11 @@ class PushokMqttBridge:
         # Per-device list of published MQTT discovery topics, to be cleared on removal
         self._discovery_topics: dict[str, list[str]] = {}
 
+        # Retained discovery configs already in the broker, collected at startup
+        # (device_id -> list of config topics) so we can purge orphans whose
+        # device no longer exists on the hub.
+        self._retained_discovery: dict[str, list[str]] = {}
+
         self._running = False
 
     @property
@@ -393,6 +398,14 @@ class PushokMqttBridge:
             client.subscribe(f"{self.base_topic}/+/+/set")      # Individual property /set topics
             client.subscribe(f"{self.base_topic}/bridge/request/#")
 
+            # Subscribe to our own retained discovery configs so we can find and
+            # purge orphans (devices removed from the hub while we were down).
+            if self._config.mqtt.discovery_enabled:
+                self._retained_discovery = {}
+                client.subscribe(
+                    f"{self._config.mqtt.discovery_prefix}/+/+/+/config"
+                )
+
             # Schedule async initialization
             if self._loop:
                 asyncio.run_coroutine_threadsafe(
@@ -416,6 +429,17 @@ class PushokMqttBridge:
         payload = message.payload.decode() if message.payload else ""
 
         _LOGGER.debug("MQTT message: %s = %s", topic, payload)
+
+        # Collect retained discovery configs published under the discovery prefix
+        # so the startup orphan-purge knows what's already in the broker. Format:
+        # {prefix}/{component}/{device_id}/{address}/config
+        prefix = self._config.mqtt.discovery_prefix
+        if topic.startswith(f"{prefix}/") and topic.endswith("/config"):
+            if payload:  # ignore our own tombstones (empty retained payloads)
+                dparts = topic.split("/")
+                if len(dparts) == 5:
+                    self._retained_discovery.setdefault(dparts[2], []).append(topic)
+            return
 
         # Skip bridge topics and availability
         if "/bridge/" in topic or topic.endswith("/availability"):
@@ -500,12 +524,41 @@ class PushokMqttBridge:
         # Publish HA discovery
         if self._config.mqtt.discovery_enabled:
             self._publish_discovery()
+            # Retained discovery configs stream in right after our subscribe;
+            # give them a moment to arrive, then purge orphans.
+            await asyncio.sleep(3)
+            self._purge_orphan_discovery()
+
+    def _purge_orphan_discovery(self) -> None:
+        """Clear retained discovery configs for devices no longer on the hub.
+
+        On startup the broker replays every retained discovery config we ever
+        published. Any whose device_id isn't in the current object list belongs
+        to a device/automation that was removed while we were down — publish an
+        empty payload to make HA forget it.
+        """
+        purged = 0
+        for device_id, topics in self._retained_discovery.items():
+            if device_id in self._devices:
+                continue
+            for topic in topics:
+                self._publish(topic, "", retain=True)
+                purged += 1
+            # The device's retained state/availability topics linger too; clear
+            # the availability one so anything keying off it sees it go away.
+            self._publish(
+                f"{self.base_topic}/{device_id}/availability", "offline", retain=True
+            )
+        if purged:
+            _LOGGER.info("Purged %d orphan discovery topic(s)", purged)
+        self._retained_discovery = {}
 
     def _handle_hub_broadcast(self, data: dict[str, Any]) -> None:
         """Handle broadcast message from hub."""
         evt = data.get("evt")
         if not self._loop:
             return
+
         if evt == "object_update":
             asyncio.run_coroutine_threadsafe(
                 self._handle_object_update(data), self._loop
