@@ -8,6 +8,7 @@ the same AdapterParam-based pseudo-adapter, so the logic lives here.
 
 from __future__ import annotations
 
+from ..const import AUTOMATION_ENABLED_FIELD
 from .models import AdapterParam, DeviceAdapter, DeviceAttributes
 
 # Maps an automation state's datatype string to (param_type, min, max).
@@ -33,8 +34,21 @@ def build_automation_pseudo_adapter(
 
     Mirrors what the TG mini-app does (DeviceCard.jsx:42-69) so consumers can
     keep using the existing AdapterParam-driven logic.
+
+    Every automation always gets an "enabled" switch on the virtual field 255
+    (its run on/off state), so even automations without any local States still
+    show up as a controllable device.
     """
-    params: list[AdapterParam] = []
+    params: list[AdapterParam] = [
+        AdapterParam(
+            address=AUTOMATION_ENABLED_FIELD,
+            access="rw",
+            param_type="bool",
+            name="enabled",
+            description="Automation enabled",
+            view_params={"type": "switch"},
+        )
+    ]
     for st in attrs.states:
         if not isinstance(st, dict) or st.get("type") != "local":
             continue

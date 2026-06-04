@@ -27,7 +27,7 @@ def _build_entities_for_device(
         device_type = (adapter.device_type or "").lower()
         is_light_device = any(t in device_type for t in ["light", "dimmer", "bulb"])
         for param in adapter.params:
-            if param.address > MAX_FIELD_ID:
+            if not device.is_automation and param.address > MAX_FIELD_ID:
                 continue
             if param.param_type == "bool" and param.is_writable:
                 if is_light_device:

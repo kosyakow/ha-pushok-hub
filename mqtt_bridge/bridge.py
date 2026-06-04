@@ -26,7 +26,6 @@ from custom_components.pushok_hub.api.models import (
     PropertyValue,
 )
 from custom_components.pushok_hub.const import (
-    AUTOMATION_ENABLED_FIELD,
     ENTITY_TYPE_AUTOMATION,
     ENTITY_TYPE_ZIGBEE,
     UNIT_MAPPING,
@@ -182,28 +181,12 @@ class PushokMqttBridge:
         # Load devices
         await self._load_devices()
 
-    async def _is_automation_enabled(self, automation_id: str) -> bool:
-        """Check the automation's enable bit (virtual field 255).
-
-        Disabled automations are skipped — nothing to publish while they're not
-        running. Mirrors the integration's behavior.
-        """
-        if not self._hub_client:
-            return False
-        try:
-            state = await self._hub_client.get_state(
-                automation_id,
-                entity_type=ENTITY_TYPE_AUTOMATION,
-                fields=[AUTOMATION_ENABLED_FIELD],
-            )
-        except Exception as e:
-            _LOGGER.debug("Enabled-check failed for automation %s: %s", automation_id, e)
-            return False
-        prop = state.properties.get(AUTOMATION_ENABLED_FIELD)
-        return prop is not None and bool(prop.value)
-
     async def _fetch_all_objects(self) -> list[DeviceDescription]:
-        """Fetch zigbee devices and enabled automations from the hub."""
+        """Fetch zigbee devices and all automations from the hub.
+
+        Every automation is imported (enabled or not) — its run state is exposed
+        as an "enabled" switch.
+        """
         if not self._hub_client:
             return []
         items = [
@@ -211,24 +194,20 @@ class PushokMqttBridge:
             if not _is_gateway_id(d.id)
         ]
         try:
-            automations = await self._hub_client.get_devices(ENTITY_TYPE_AUTOMATION)
+            automations = [
+                d for d in await self._hub_client.get_devices(ENTITY_TYPE_AUTOMATION)
+                if not _is_gateway_id(d.id)
+            ]
         except Exception as e:
             _LOGGER.debug("Failed to list automations: %s", e)
             automations = []
-        kept = 0
-        for auto in automations:
-            if await self._is_automation_enabled(auto.id):
-                items.append(auto)
-                kept += 1
         if automations:
-            _LOGGER.info(
-                "Loaded %d automation(s) (%d total, %d disabled)",
-                kept, len(automations), len(automations) - kept,
-            )
+            _LOGGER.info("Loaded %d automation(s)", len(automations))
+        items.extend(automations)
         return items
 
     async def _load_devices(self) -> None:
-        """Load all zigbee devices and enabled automations from hub."""
+        """Load all zigbee devices and automations from hub."""
         if not self._hub_client:
             return
 
@@ -591,14 +570,8 @@ class PushokMqttBridge:
                 )
 
     async def _handle_object_add(self, device_id: str, entity_type: str) -> None:
-        """Fetch a newly-added device/automation and publish it.
-
-        For automations, only add it if its enable bit is set.
-        """
+        """Fetch a newly-added device/automation and publish it."""
         if not self._hub_client or _is_gateway_id(device_id):
-            return
-        if entity_type == ENTITY_TYPE_AUTOMATION and not await self._is_automation_enabled(device_id):
-            _LOGGER.debug("object_add for disabled automation %s — skipping", device_id)
             return
         try:
             devices = await self._hub_client.get_devices(entity_type)
@@ -680,30 +653,7 @@ class PushokMqttBridge:
         device_id = data.get("id")
         props = data.get("props", {})
 
-        if not device_id:
-            return
-
-        # An automation's enable bit (field 255) toggled — add or remove it.
-        # Runs before the "unknown device" guard so we react to enable events
-        # for automations we don't yet track.
-        if (
-            data.get("type") == ENTITY_TYPE_AUTOMATION
-            and str(AUTOMATION_ENABLED_FIELD) in props
-        ):
-            enable_prop = props[str(AUTOMATION_ENABLED_FIELD)]
-            if isinstance(enable_prop, dict):
-                wants_enabled = bool(enable_prop.get("value"))
-                known = device_id in self._devices
-                if wants_enabled and not known:
-                    _LOGGER.info("Automation %s enabled — adding", device_id)
-                    await self._handle_object_add(device_id, ENTITY_TYPE_AUTOMATION)
-                    return
-                if not wants_enabled and known:
-                    _LOGGER.info("Automation %s disabled — removing", device_id)
-                    await self._handle_object_remove(device_id)
-                    return
-
-        if device_id not in self._devices:
+        if not device_id or device_id not in self._devices:
             return
 
         device = self._devices[device_id]
@@ -1065,7 +1015,9 @@ class PushokMqttBridge:
 
         topics: list[str] = []
         for param in adapter.params:
-            if param.address > 200:  # Skip service fields
+            # Skip zigbee service fields; automation params (incl. the enabled
+            # switch on field 255) are all valid.
+            if not device.is_automation and param.address > 200:
                 continue
 
             entity_id = f"pushok_{device_id}_{param.address}"

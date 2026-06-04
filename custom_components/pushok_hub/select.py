@@ -24,7 +24,7 @@ def _build_entities_for_device(
     adapter = coordinator.get_adapter_for_device(device.id)
     if adapter and adapter.params:
         for param in adapter.params:
-            if param.address > MAX_FIELD_ID:
+            if not device.is_automation and param.address > MAX_FIELD_ID:
                 continue
             view_type = param.view_params.get("type", "")
             if view_type == "dropdown" and param.labels and param.is_writable:

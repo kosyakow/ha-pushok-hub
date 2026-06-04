@@ -68,13 +68,11 @@ The integration automatically discovers devices connected to your Pushok Hub and
 
 ## Hub Automations
 
-Pushok hub runs its own flattened state-machine automations. Each automation has internal `State` variables — setpoints, modes, flags — that the integration imports as HA entities (`State.type == "local"`):
+Pushok hub runs its own flattened state-machine automations. Each automation is imported as a separate HA device:
 
-- Read-only states become `sensor` or `binary_sensor`
-- Writable states become `number` or `switch`
-- Each automation appears as a separate device in HA with all its states grouped under it
-
-Only enabled automations are imported; enabling or disabling one on the hub adds or removes its entities automatically.
+- An **Enabled** switch turns the automation on/off from HA.
+- Its local `State` variables (`State.type == "local"`) become entities: read-only → `sensor`/`binary_sensor`, writable → `number`/`switch`.
+- Every automation is imported, including disabled ones and those without any local states (they still get the Enabled switch).
 
 ## MQTT Bridge (optional)
 

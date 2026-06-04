@@ -29,7 +29,7 @@ def _build_entities_for_device(
     adapter = coordinator.get_adapter_for_device(device.id)
     if adapter and adapter.params:
         for param in adapter.params:
-            if param.address > MAX_FIELD_ID:
+            if not device.is_automation and param.address > MAX_FIELD_ID:
                 continue
             if param.param_type in ("int", "float") and not param.is_writable:
                 entities.append(PushokHubSensor(coordinator, device, param.address))
