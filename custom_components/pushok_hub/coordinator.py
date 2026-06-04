@@ -230,7 +230,7 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         self._platform_builders.append((builder, async_add_entities))
 
     async def _load_devices(self) -> None:
-        """Load all zigbee devices and (enabled) automations from the hub."""
+        """Load all zigbee devices and automations from the hub."""
         if not self._client:
             return
 

@@ -1012,8 +1012,12 @@ class PushokMqttBridge:
         if not adapter or not state:
             return
 
+        # Prefix automation identifiers so they can't collide with a zigbee
+        # IEEE in HA's device registry (mirrors the integration). Topics still
+        # use the raw device_id.
+        identifier = f"auto_{device_id}" if device.is_automation else device_id
         device_info = {
-            "identifiers": [device_id],
+            "identifiers": [identifier],
             "name": friendly_name,
             "model": "Automation" if device.is_automation else device.model,
             "manufacturer": "Pushok" if device.is_automation else device.manufacturer,
