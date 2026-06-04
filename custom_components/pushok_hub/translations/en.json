@@ -8,8 +8,7 @@
           "host": "Host",
           "port": "Port",
           "use_ssl": "Use SSL",
-          "name": "Name (optional)",
-          "import_automations": "Import hub automations"
+          "name": "Name (optional)"
         }
       },
       "remote": {
@@ -17,8 +16,7 @@
         "description": "Enter your Hub ID to connect via cloud gateway.",
         "data": {
           "hub_id": "Hub ID",
-          "name": "Name (optional)",
-          "import_automations": "Import hub automations"
+          "name": "Name (optional)"
         }
       },
       "reconfigure": {
@@ -53,17 +51,6 @@
     "abort": {
       "already_configured": "This hub is already configured.",
       "reconfigure_successful": "Configuration updated successfully."
-    }
-  },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Pushok Hub Options",
-        "description": "Change which objects are imported from the hub.",
-        "data": {
-          "import_automations": "Import hub automations"
-        }
-      }
     }
   }
 }

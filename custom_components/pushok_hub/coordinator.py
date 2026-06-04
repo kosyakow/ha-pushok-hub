@@ -29,8 +29,6 @@ from .const import (
     CONF_REMOTE_MODE,
     CONF_HUB_ID,
     AUTOMATION_ENABLED_FIELD,
-    CONF_IMPORT_AUTOMATIONS,
-    DEFAULT_IMPORT_AUTOMATIONS,
     DEFAULT_PORT,
     DEFAULT_USE_SSL,
     DEVICE_LIST_POLL_INTERVAL,
@@ -103,13 +101,6 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         self._platform_builders: list[tuple[PlatformBuilder, AddEntitiesCallback]] = []
         # Serialize add/remove against concurrent broadcasts and the periodic poller
         self._devices_lock = asyncio.Lock()
-
-        # Whether to fetch automations alongside zigbee devices. Pulled from
-        # config entry options at setup time; default on for new installs.
-        self._import_automations: bool = entry.options.get(
-            CONF_IMPORT_AUTOMATIONS,
-            entry.data.get(CONF_IMPORT_AUTOMATIONS, DEFAULT_IMPORT_AUTOMATIONS),
-        )
 
     @property
     def client(self) -> PushokHubClient | None:
@@ -400,7 +391,7 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         return prop is not None and bool(prop.value)
 
     async def _fetch_all_objects(self) -> list[DeviceDescription]:
-        """Fetch zigbee devices and (if enabled) automations from the hub.
+        """Fetch zigbee devices and enabled automations from the hub.
 
         Disabled automations are filtered out — only those with their field-255
         enable bit set true are returned.
@@ -408,19 +399,19 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         if not self._client:
             return []
         items = [d for d in await self._client.get_devices(ENTITY_TYPE_ZIGBEE) if _is_real_device(d)]
-        if self._import_automations:
-            try:
-                automations = await self._client.get_devices(ENTITY_TYPE_AUTOMATION)
-            except Exception as e:
-                _LOGGER.debug("Failed to list automations: %s", e)
-                automations = []
-            kept = 0
-            for auto in automations:
-                if await self._is_automation_enabled(auto.id):
-                    items.append(auto)
-                    kept += 1
-                else:
-                    _LOGGER.debug("Skipping disabled automation %s", auto.id)
+        try:
+            automations = await self._client.get_devices(ENTITY_TYPE_AUTOMATION)
+        except Exception as e:
+            _LOGGER.debug("Failed to list automations: %s", e)
+            automations = []
+        kept = 0
+        for auto in automations:
+            if await self._is_automation_enabled(auto.id):
+                items.append(auto)
+                kept += 1
+            else:
+                _LOGGER.debug("Skipping disabled automation %s", auto.id)
+        if automations:
             _LOGGER.info(
                 "Loaded %d automation(s) from hub (%d total, %d disabled)",
                 kept, len(automations), len(automations) - kept,
@@ -576,8 +567,6 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         entity_type = data.get("type")
         if entity_type not in (ENTITY_TYPE_ZIGBEE, ENTITY_TYPE_AUTOMATION):
             return
-        if entity_type == ENTITY_TYPE_AUTOMATION and not self._import_automations:
-            return
         if device_id in self._devices:
             return
 
@@ -632,7 +621,6 @@ class PushokHubCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         # must run BEFORE the "unknown device" early-return below.
         if (
             data.get("type") == ENTITY_TYPE_AUTOMATION
-            and self._import_automations
             and str(AUTOMATION_ENABLED_FIELD) in props
         ):
             enable_prop = props[str(AUTOMATION_ENABLED_FIELD)]

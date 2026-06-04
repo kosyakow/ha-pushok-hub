@@ -74,7 +74,7 @@ Pushok hub runs its own flattened state-machine automations. Each automation has
 - Writable states become `number` or `switch`
 - Each automation appears as a separate device in HA with all its states grouped under it
 
-Toggle this behavior in the integration's options (Settings → Devices & Services → Pushok Hub → Configure). Disabling it removes the automation devices without affecting zigbee ones.
+Only enabled automations are imported; enabling or disabling one on the hub adds or removes its entities automatically.
 
 ## MQTT Bridge (optional)
 

@@ -7,14 +7,8 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.config_entries import (
-    ConfigEntry,
-    ConfigFlow,
-    ConfigFlowResult,
-    OptionsFlow,
-)
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_NAME
-from homeassistant.core import callback
 from homeassistant.helpers.selector import (
     SelectSelector,
     SelectSelectorConfig,
@@ -30,8 +24,6 @@ from .const import (
     CONF_USE_SSL,
     CONF_REMOTE_MODE,
     CONF_HUB_ID,
-    CONF_IMPORT_AUTOMATIONS,
-    DEFAULT_IMPORT_AUTOMATIONS,
     DEFAULT_PORT,
     DEFAULT_USE_SSL,
     REMOTE_GATEWAY_HOST,
@@ -48,9 +40,6 @@ STEP_LOCAL_DATA_SCHEMA = vol.Schema(
         vol.Optional(CONF_PORT, default=DEFAULT_PORT): int,
         vol.Optional(CONF_USE_SSL, default=DEFAULT_USE_SSL): bool,
         vol.Optional(CONF_NAME): str,
-        vol.Optional(
-            CONF_IMPORT_AUTOMATIONS, default=DEFAULT_IMPORT_AUTOMATIONS
-        ): bool,
     }
 )
 
@@ -58,9 +47,6 @@ STEP_REMOTE_DATA_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_HUB_ID): str,
         vol.Optional(CONF_NAME): str,
-        vol.Optional(
-            CONF_IMPORT_AUTOMATIONS, default=DEFAULT_IMPORT_AUTOMATIONS
-        ): bool,
     }
 )
 
@@ -79,12 +65,6 @@ class PushokHubConfigFlow(ConfigFlow, domain=DOMAIN):
         """Initialize the config flow."""
         super().__init__()
         self._reconfig_entry_id: str | None = None
-
-    @staticmethod
-    @callback
-    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
-        """Return the options flow for this integration."""
-        return PushokHubOptionsFlow(config_entry)
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -126,11 +106,6 @@ class PushokHubConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_REMOTE_MODE: False,
                         STORAGE_KEY_PRIVATE_KEY: auth.private_key_hex,
                         STORAGE_KEY_USER_ID: auth.user_id_b64,
-                    },
-                    options={
-                        CONF_IMPORT_AUTOMATIONS: user_input.get(
-                            CONF_IMPORT_AUTOMATIONS, DEFAULT_IMPORT_AUTOMATIONS
-                        ),
                     },
                 )
 
@@ -185,11 +160,6 @@ class PushokHubConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_HUB_ID: hub_id,
                         STORAGE_KEY_PRIVATE_KEY: auth.private_key_hex,
                         STORAGE_KEY_USER_ID: auth.user_id_b64,
-                    },
-                    options={
-                        CONF_IMPORT_AUTOMATIONS: user_input.get(
-                            CONF_IMPORT_AUTOMATIONS, DEFAULT_IMPORT_AUTOMATIONS
-                        ),
                     },
                 )
 
@@ -381,30 +351,4 @@ class PushokHubConfigFlow(ConfigFlow, domain=DOMAIN):
                 }
             ),
             errors=errors,
-        )
-
-
-class PushokHubOptionsFlow(OptionsFlow):
-    """Options flow — currently just the automation import toggle."""
-
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        self._entry = config_entry
-
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
-
-        current = self._entry.options.get(
-            CONF_IMPORT_AUTOMATIONS,
-            self._entry.data.get(CONF_IMPORT_AUTOMATIONS, DEFAULT_IMPORT_AUTOMATIONS),
-        )
-        return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(CONF_IMPORT_AUTOMATIONS, default=current): bool,
-                }
-            ),
         )
