@@ -13,17 +13,21 @@ from .models import AdapterParam, DeviceAdapter, DeviceAttributes
 
 # Maps an automation state's datatype string to (param_type, min, max).
 # Mirrors DATATYPE_INFO from iot-gate/tg-miniapp/src/components/DeviceCard.jsx.
-AUTOMATION_DATATYPES: dict[str, tuple[str, int | None, int | None]] = {
+# Every type carries explicit min/max so HA never falls back to its 0..100
+# default (which would clamp signed/large/float values). INT64/UINT64 use the
+# JS safe-integer range the TG app uses; FLOAT uses its ±1e6 range.
+_SAFE_INT = 2**53 - 1  # Number.MAX_SAFE_INTEGER, matches the TG app
+AUTOMATION_DATATYPES: dict[str, tuple[str, int | float, int | float]] = {
     "BOOL":   ("bool",  0, 1),
     "INT8":   ("int",  -128, 127),
     "INT16":  ("int",  -32768, 32767),
     "INT32":  ("int",  -2147483648, 2147483647),
-    "INT64":  ("int",  None, None),
+    "INT64":  ("int",  -_SAFE_INT, _SAFE_INT),
     "UINT8":  ("int",  0, 255),
     "UINT16": ("int",  0, 65535),
     "UINT32": ("int",  0, 4294967295),
-    "UINT64": ("int",  0, None),
-    "FLOAT":  ("float", None, None),
+    "UINT64": ("int",  0, _SAFE_INT),
+    "FLOAT":  ("float", -1000000.0, 1000000.0),
 }
 
 
@@ -57,7 +61,7 @@ def build_automation_pseudo_adapter(
             continue
         datatype = (st.get("datatype") or "").upper()
         param_type, min_v, max_v = AUTOMATION_DATATYPES.get(
-            datatype, ("int", None, None)
+            datatype, AUTOMATION_DATATYPES["INT32"]
         )
         writable = bool(st.get("write"))
         name = st.get("name") or f"state_{local_id}"

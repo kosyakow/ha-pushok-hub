@@ -89,6 +89,11 @@ class PushokHubNumber(PushokHubEntity, NumberEntity):
 
         self._attr_mode = self._choose_mode(min_value, max_value)
 
+        # Always set a step — without it HA defaults to 1, which forbids
+        # decimals on float params. Ints step by 1, floats allow 2 decimals.
+        param_type = self._adapter_param.param_type if self._adapter_param else "int"
+        self._attr_native_step = 0.01 if param_type == "float" else 1
+
         # Set unit from adapter
         unit = self._get_ha_unit()
         if unit:

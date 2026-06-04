@@ -1071,6 +1071,19 @@ class PushokMqttBridge:
                         config_payload["min"] = param.min_value
                     if param.max_value is not None:
                         config_payload["max"] = param.max_value
+                    # Without an explicit step HA's MQTT number defaults to 1,
+                    # which forbids decimals on float params.
+                    is_float = param.param_type == "float"
+                    config_payload["step"] = 0.01 if is_float else 1
+                    span = (
+                        (param.max_value - param.min_value)
+                        if param.min_value is not None and param.max_value is not None
+                        else None
+                    )
+                    if is_float or span is None or span > 256:
+                        config_payload["mode"] = "box"
+                    else:
+                        config_payload["mode"] = "slider"
                 else:
                     component = "sensor"
                     unit = param.view_params.get("unit")
