@@ -9,7 +9,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api.models import AdapterParam, DeviceAdapter, DeviceDescription
 from .const import DOMAIN, UNIT_MAPPING
-from .coordinator import PushokHubCoordinator
+from .coordinator import PushokHubCoordinator, registry_identifier
 
 
 class PushokHubEntity(CoordinatorEntity[PushokHubCoordinator]):
@@ -43,8 +43,9 @@ class PushokHubEntity(CoordinatorEntity[PushokHubCoordinator]):
         if adapter:
             self._adapter_param = adapter.get_param_by_address(field_id)
 
-        # Unique ID: domain_device-ieee_field-id
-        self._attr_unique_id = f"{DOMAIN}_{device.id}_{field_id}"
+        # Unique ID: domain_<registry-id>_field-id. registry_identifier() adds
+        # the "auto_" prefix for automations so ids can't collide with zigbee.
+        self._attr_unique_id = f"{DOMAIN}_{registry_identifier(device)}_{field_id}"
 
         # Entity name - prefer adapter param name
         if name_suffix:
@@ -64,13 +65,22 @@ class PushokHubEntity(CoordinatorEntity[PushokHubCoordinator]):
     def device_info(self) -> DeviceInfo:
         """Return device information."""
         attrs = self.coordinator.attributes.get(self._device.id)
+
+        if self._device.is_automation:
+            # Automations don't have manufacturer/model/driver. Identifier is
+            # prefixed so it can never collide with a zigbee IEEE address.
+            name = attrs.name if attrs and attrs.name else f"Automation {self._device.id}"
+            return DeviceInfo(
+                identifiers={(DOMAIN, registry_identifier(self._device))},
+                name=name,
+                manufacturer="Pushok",
+                model="Automation",
+            )
+
         # Use name from hub attributes, fallback to model
         name = attrs.name if attrs and attrs.name else self._device.model
-
-        # Get URL from adapter if available
         adapter = self.coordinator.get_adapter_for_device(self._device.id)
         config_url = adapter.url if adapter else None
-
         return DeviceInfo(
             identifiers={(DOMAIN, self._device.id)},
             name=name,
@@ -86,8 +96,10 @@ class PushokHubEntity(CoordinatorEntity[PushokHubCoordinator]):
         if not self.coordinator.client or not self.coordinator.client.connected:
             return False
 
-        # Check if device has recent data
-        if self._device.warning:
+        # Zigbee devices carry a "warn" flag from the hub when the device is
+        # offline; automations don't (they're always logically present while
+        # the hub is reachable).
+        if not self._device.is_automation and self._device.warning:
             return False
 
         return True

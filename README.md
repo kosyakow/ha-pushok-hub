@@ -18,6 +18,7 @@ Home Assistant integration for Pushok Zigbee Hub.
   - Lights with brightness and color temperature
   - Number controls (sliders)
   - Select controls (dropdowns)
+- Imports the hub's automations and exposes their local `State` parameters as HA entities (sensor / switch / number / binary_sensor) — one HA device per automation
 - Alternative mode: standalone MQTT bridge in Zigbee2MQTT-compatible format — see [`mqtt_bridge/`](mqtt_bridge/README.md)
 
 ## Installation
@@ -64,6 +65,14 @@ This allows you to access your hub from anywhere without exposing it to the inte
 ## Supported Devices
 
 The integration automatically discovers devices connected to your Pushok Hub and creates appropriate entities based on device capabilities.
+
+## Hub Automations
+
+Pushok hub runs its own flattened state-machine automations. Each automation is imported as a separate HA device:
+
+- An **Enabled** switch turns the automation on/off from HA.
+- Its local `State` variables (`State.type == "local"`) become entities: read-only → `sensor`/`binary_sensor`, writable → `number`/`switch`.
+- Every automation is imported, including disabled ones and those without any local states (they still get the Enabled switch).
 
 ## MQTT Bridge (optional)
 

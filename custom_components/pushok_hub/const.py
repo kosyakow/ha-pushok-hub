@@ -11,6 +11,10 @@ CONF_USE_SSL: Final = "use_ssl"
 CONF_REMOTE_MODE: Final = "remote_mode"
 CONF_HUB_ID: Final = "hub_id"
 
+# Virtual field id for an automation's "enabled" bit. The hub returns it via
+# getState; the field isn't part of the automation's State descriptors.
+AUTOMATION_ENABLED_FIELD: Final = 255
+
 # Defaults
 DEFAULT_PORT: Final = 3001
 DEFAULT_PORT_SSL: Final = 443

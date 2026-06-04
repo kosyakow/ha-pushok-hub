@@ -357,7 +357,7 @@ class PushokHubClient:
         devices = []
         for item in response.get("result", []):
             try:
-                devices.append(DeviceDescription.from_dict(item))
+                devices.append(DeviceDescription.from_dict(item, entity_type=entity_type))
             except Exception as e:
                 _LOGGER.warning("Failed to parse device: %s", e)
         return devices

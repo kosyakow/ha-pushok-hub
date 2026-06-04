@@ -29,11 +29,12 @@ def _build_entities_for_device(
     adapter = coordinator.get_adapter_for_device(device.id)
     if adapter and adapter.params:
         for param in adapter.params:
-            if param.address > MAX_FIELD_ID:
+            if not device.is_automation and param.address > MAX_FIELD_ID:
                 continue
             if param.param_type in ("int", "float") and not param.is_writable:
                 entities.append(PushokHubSensor(coordinator, device, param.address))
-    else:
+    elif not device.is_automation:
+        # format only exists for zigbee — automations always come with an adapter
         fmt = coordinator.formats.get(device.id)
         if fmt:
             for field_id, field_fmt in fmt.fields.items():
@@ -42,7 +43,9 @@ def _build_entities_for_device(
                 if field_fmt.is_numeric and field_fmt.is_read_only:
                     entities.append(PushokHubSensor(coordinator, device, field_id))
 
-    entities.append(PushokHubLQISensor(coordinator, device))
+    # LQI is a radio-link concept — only applies to zigbee devices.
+    if not device.is_automation:
+        entities.append(PushokHubLQISensor(coordinator, device))
     return entities
 
 
