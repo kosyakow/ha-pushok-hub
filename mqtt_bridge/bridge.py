@@ -958,7 +958,15 @@ class PushokMqttBridge:
         # Publish each property to separate topic
         for prop_name, prop_value in payload.items():
             prop_topic = f"{self.base_topic}/{device_id}/{prop_name}"
-            prop_payload = str(prop_value) if not isinstance(prop_value, str) else prop_value
+            # Bools must render as "true"/"false" (not Python's "True"/"False")
+            # so they match the discovery state_on/off for label-less bools.
+            # Check bool before str since bool is an int subclass.
+            if isinstance(prop_value, bool):
+                prop_payload = "true" if prop_value else "false"
+            elif isinstance(prop_value, str):
+                prop_payload = prop_value
+            else:
+                prop_payload = str(prop_value)
             self._last_published[prop_topic] = prop_payload
             self._publish(prop_topic, prop_payload, retain=True)
 
@@ -1039,14 +1047,19 @@ class PushokMqttBridge:
             }
 
             if param.param_type == "bool":
-                label_on = "on"
-                label_off = "off"
                 if param.labels:
+                    label_on = "on"
+                    label_off = "off"
                     for label, val in param.labels.items():
                         if val is True or val == 1:
                             label_on = label
                         elif val is False or val == 0:
                             label_off = label
+                else:
+                    # Label-less bool is published as "true"/"false" by
+                    # _publish_device_state, so state must match that.
+                    label_on = "true"
+                    label_off = "false"
 
                 if param.is_writable:
                     component = "switch"
