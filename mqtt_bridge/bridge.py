@@ -7,6 +7,7 @@ import json
 import logging
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +64,13 @@ class PushokMqttBridge:
         # Track last published payloads to ignore echo messages
         self._last_published: dict[str, str] = {}
 
+        # MQTT health / active dead-connection detection
+        self._mqtt_health_task: asyncio.Task | None = None
+        self._mqtt_ever_connected = False
+        self._last_mqtt_rx: float = 0.0
+        self._mqtt_disconnected_since: float | None = None
+        self._ping_counter = 0
+
         # Connection state
         self._hub_connected = False
         self._reconnect_task: asyncio.Task | None = None
@@ -114,6 +122,9 @@ class PushokMqttBridge:
         # Periodic device-list re-poll as a safety net
         self._device_poll_task = asyncio.create_task(self._device_list_poll_loop())
 
+        # Active MQTT health check: round-trip ping + reconnect watchdog
+        self._mqtt_health_task = asyncio.create_task(self._mqtt_health_loop())
+
         # Run main loop
         try:
             while self._running:
@@ -139,6 +150,14 @@ class PushokMqttBridge:
             self._device_poll_task.cancel()
             try:
                 await self._device_poll_task
+            except asyncio.CancelledError:
+                pass
+
+        # Cancel MQTT health task
+        if self._mqtt_health_task and not self._mqtt_health_task.done():
+            self._mqtt_health_task.cancel()
+            try:
+                await self._mqtt_health_task
             except asyncio.CancelledError:
                 pass
 
@@ -354,10 +373,11 @@ class PushokMqttBridge:
 
         # connect_async never raises on DNS/refused — it queues the connect
         # for the network loop, which keeps retrying with reconnect_delay_set.
+        # keepalive=30 so paho detects a broken TCP socket in ~45s instead of ~90s.
         self._mqtt_client.connect_async(
             self._config.mqtt.host,
             self._config.mqtt.port,
-            keepalive=60,
+            keepalive=30,
         )
         self._mqtt_client.loop_start()
         _LOGGER.info("MQTT loop_start() called")
@@ -367,25 +387,19 @@ class PushokMqttBridge:
         """Handle MQTT connect."""
         rc = reason_code.value if hasattr(reason_code, 'value') else int(reason_code)
         if rc == 0:
-            _LOGGER.info("Connected to MQTT broker")
+            reconnect = self._mqtt_ever_connected
+            _LOGGER.info("%s to MQTT broker", "Reconnected" if reconnect else "Connected")
             self._mqtt_connected = True
+            self._mqtt_ever_connected = True
+            self._mqtt_disconnected_since = None
+            self._last_mqtt_rx = time.monotonic()
 
-            # Subscribe to command topics
-            client.subscribe(f"{self.base_topic}/+/set")        # JSON commands
-            client.subscribe(f"{self.base_topic}/+")            # Main device topic
-            client.subscribe(f"{self.base_topic}/+/+")          # Individual property topics
-            client.subscribe(f"{self.base_topic}/+/+/set")      # Individual property /set topics
-            client.subscribe(f"{self.base_topic}/bridge/request/#")
-
-            # Subscribe to our own retained discovery configs so we can find and
-            # purge orphans (devices removed from the hub while we were down).
-            if self._config.mqtt.discovery_enabled:
-                self._retained_discovery = {}
-                client.subscribe(
-                    f"{self._config.mqtt.discovery_prefix}/+/+/+/config"
-                )
-
-            # Schedule async initialization
+            # Seed retained state and subscribe from the event loop (see
+            # _on_mqtt_ready): seeding must happen strictly before subscribing so
+            # the broker's retained replay of our own topics is filtered as an
+            # echo. Doing it there (not here on paho's network thread) also avoids
+            # iterating the device dicts concurrently with the async add/remove
+            # handlers.
             if self._loop:
                 asyncio.run_coroutine_threadsafe(
                     self._on_mqtt_ready(),
@@ -398,14 +412,23 @@ class PushokMqttBridge:
                             disconnect_flags: Any, reason_code: Any, properties: Any = None) -> None:
         """Handle MQTT disconnect."""
         self._mqtt_connected = False
+        self._mqtt_disconnected_since = time.monotonic()
         rc = reason_code.value if hasattr(reason_code, 'value') else int(reason_code) if reason_code else 0
-        _LOGGER.warning("Disconnected from MQTT broker (rc=%d)", rc)
+        _LOGGER.warning("Disconnected from MQTT broker (rc=%d); paho will auto-reconnect", rc)
 
     def _on_mqtt_message(self, client: mqtt.Client, userdata: Any,
                          message: mqtt.MQTTMessage) -> None:
         """Handle incoming MQTT message."""
         topic = message.topic
         payload = message.payload.decode() if message.payload else ""
+
+        # Any inbound message proves the subscription delivery path is alive.
+        self._last_mqtt_rx = time.monotonic()
+
+        # Health round-trip: our own ping, echoed back by the broker. Handle it
+        # before the "/bridge/" skip below and don't process it further.
+        if topic == f"{self.base_topic}/bridge/ping":
+            return
 
         _LOGGER.debug("MQTT message: %s = %s", topic, payload)
 
@@ -424,14 +447,12 @@ class PushokMqttBridge:
         if "/bridge/" in topic or topic.endswith("/availability"):
             return
 
-        # A retained message on a command/state topic is our own mirrored state
-        # being replayed by the broker (e.g. on reconnect/restart), not a user
-        # command. Real commands from HA arrive non-retained. Without this guard
-        # the broker's replay of our retained state gets echoed straight back to
-        # the hub as setState on every startup.
-        if message.retain:
-            return
-
+        # Retained messages are NOT blanket-dropped: external controllers such as
+        # iobroker publish commands with retain=true, so we must accept them. Our
+        # own retained state — replayed by the broker on subscribe — is filtered
+        # by the value-based echo check below. _last_published is seeded before we
+        # subscribe (see _on_mqtt_ready), so those replays always match and are
+        # dropped, while a genuine command carries a different value and passes.
         parts = topic.split("/")
         if len(parts) < 2 or parts[0] != self.base_topic:
             return
@@ -498,17 +519,42 @@ class PushokMqttBridge:
                     pass
 
     async def _on_mqtt_ready(self) -> None:
-        """Called when MQTT is connected and ready."""
-        # Publish bridge state
+        """Seed retained state, subscribe, then publish HA discovery.
+
+        Order matters: we publish (and record in _last_published) our own retained
+        topics BEFORE subscribing, so the broker's retained replay of those topics
+        is recognized as an echo and dropped — instead of being mistaken for a
+        fresh command and pushed back to the hub. Genuine commands from external
+        clients (e.g. iobroker, which publishes retained) carry a different value
+        and still pass through.
+        """
+        client = self._mqtt_client
+        if not client:
+            return
+
+        # 1. Seed our own retained state first (populates _last_published).
         self._publish_bridge_state("online")
-
-        # Publish device list
         self._publish_bridge_devices()
-
-        # Publish initial states
         self._publish_all_states()
 
-        # Publish HA discovery
+        # 2. Now subscribe. The health ping topic {base}/bridge/ping is delivered
+        #    by the {base}/+/+ subscription, so it needs no separate subscribe.
+        client.subscribe(f"{self.base_topic}/+/set")        # JSON commands
+        client.subscribe(f"{self.base_topic}/+")            # Main device topic
+        client.subscribe(f"{self.base_topic}/+/+")          # Individual property topics
+        client.subscribe(f"{self.base_topic}/+/+/set")      # Individual property /set topics
+        client.subscribe(f"{self.base_topic}/bridge/request/#")
+        _LOGGER.info("Subscribed to command topics")
+
+        # Subscribe to our own retained discovery configs so we can find and purge
+        # orphans (devices removed from the hub while we were down).
+        if self._config.mqtt.discovery_enabled:
+            self._retained_discovery = {}
+            client.subscribe(
+                f"{self._config.mqtt.discovery_prefix}/+/+/+/config"
+            )
+
+        # 3. Publish HA discovery
         if self._config.mqtt.discovery_enabled:
             self._publish_discovery()
             # Retained discovery configs stream in right after our subscribe;
@@ -647,6 +693,76 @@ class PushokMqttBridge:
                 await self._add_device(device)
             for device_id in removed:
                 await self._handle_object_remove(device_id)
+
+    async def _mqtt_health_loop(self) -> None:
+        """Actively detect a dead MQTT link and force a reconnect.
+
+        paho's keepalive only catches a broken TCP socket. It does NOT catch a
+        broker that stays connected but silently stops delivering our
+        subscriptions — the connection looks fine while nothing gets through.
+
+        Branch B probes the full path with a round-trip ping: we publish to
+        {base}/bridge/ping (which our own {base}/+/+ subscription delivers back)
+        and, if it doesn't return, force a reconnect. Branch A force-reconnects if
+        paho's own auto-reconnect appears to have stalled.
+        """
+        PING_INTERVAL = 30      # seconds between health checks
+        PONG_TIMEOUT = 20       # how long to wait for our ping to come back
+        RECONNECT_STALL = 90    # force reconnect if disconnected at least this long
+
+        while self._running:
+            try:
+                await asyncio.sleep(PING_INTERVAL)
+            except asyncio.CancelledError:
+                return
+
+            client = self._mqtt_client
+            if not client:
+                continue
+
+            now = time.monotonic()
+
+            # Branch A: not connected — has paho's own auto-reconnect stalled?
+            if not self._mqtt_connected:
+                since = self._mqtt_disconnected_since or now
+                if self._mqtt_ever_connected and now - since > RECONNECT_STALL:
+                    _LOGGER.warning(
+                        "MQTT still disconnected after %ds; forcing reconnect",
+                        RECONNECT_STALL,
+                    )
+                    try:
+                        client.reconnect()
+                    except Exception as e:
+                        _LOGGER.warning("Forced MQTT reconnect failed: %s", e)
+                    self._mqtt_disconnected_since = now
+                continue
+
+            # Branch B: connected but quiet — verify delivery with a round-trip.
+            if now - self._last_mqtt_rx < PING_INTERVAL:
+                continue  # recent inbound traffic already proves the link is alive
+
+            rx_before = self._last_mqtt_rx
+            self._ping_counter += 1
+            self._publish(
+                f"{self.base_topic}/bridge/ping", str(self._ping_counter), retain=False
+            )
+
+            try:
+                await asyncio.sleep(PONG_TIMEOUT)
+            except asyncio.CancelledError:
+                return
+
+            if self._last_mqtt_rx <= rx_before:
+                _LOGGER.warning(
+                    "MQTT round-trip ping timed out (%ds); link is dead, forcing reconnect",
+                    PONG_TIMEOUT,
+                )
+                self._mqtt_connected = False
+                self._mqtt_disconnected_since = time.monotonic()
+                try:
+                    client.reconnect()
+                except Exception as e:
+                    _LOGGER.warning("Forced MQTT reconnect failed: %s", e)
 
     async def _handle_object_update(self, data: dict[str, Any]) -> None:
         """Handle object update from hub."""
