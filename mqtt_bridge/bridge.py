@@ -64,14 +64,10 @@ class PushokMqttBridge:
         # Track last published payloads to ignore echo messages
         self._last_published: dict[str, str] = {}
 
-        # MQTT health / active dead-connection detection
+        # MQTT reconnect backstop (real link death is caught by paho keepalive)
         self._mqtt_health_task: asyncio.Task | None = None
         self._mqtt_ever_connected = False
-        self._last_mqtt_rx: float = 0.0
         self._mqtt_disconnected_since: float | None = None
-        self._ping_counter = 0
-        self._ping_mid: int = -1
-        self._ping_acked = False
 
         # Connection state
         self._hub_connected = False
@@ -369,7 +365,6 @@ class PushokMqttBridge:
         self._mqtt_client.on_connect = self._on_mqtt_connect
         self._mqtt_client.on_disconnect = self._on_mqtt_disconnect
         self._mqtt_client.on_message = self._on_mqtt_message
-        self._mqtt_client.on_publish = self._on_mqtt_publish
 
         # At DEBUG, route paho's own protocol log (PINGREQ/PINGRESP, PUBACK,
         # CONNACK, and DISCONNECT reason codes) through our logger so a real
@@ -401,7 +396,6 @@ class PushokMqttBridge:
             self._mqtt_connected = True
             self._mqtt_ever_connected = True
             self._mqtt_disconnected_since = None
-            self._last_mqtt_rx = time.monotonic()
 
             # Seed retained state and subscribe from the event loop (see
             # _on_mqtt_ready): seeding must happen strictly before subscribing so
@@ -425,17 +419,6 @@ class PushokMqttBridge:
         rc = reason_code.value if hasattr(reason_code, 'value') else int(reason_code) if reason_code else 0
         _LOGGER.warning("Disconnected from MQTT broker (rc=%d); paho will auto-reconnect", rc)
 
-    def _on_mqtt_publish(self, client: mqtt.Client, userdata: Any,
-                         mid: int, reason_code: Any = None, properties: Any = None) -> None:
-        """Handle MQTT publish completion (PUBACK for QoS 1).
-
-        Used by the health loop: a PUBACK for our probe's mid confirms the broker
-        is alive and processing our packets, without relying on the broker echoing
-        our own messages back to us (which iobroker's broker does not do).
-        """
-        if mid == self._ping_mid:
-            self._ping_acked = True
-
     def _on_mqtt_message(self, client: mqtt.Client, userdata: Any,
                          message: mqtt.MQTTMessage) -> None:
         """Paho callback wrapper.
@@ -457,15 +440,6 @@ class PushokMqttBridge:
         """Handle incoming MQTT message."""
         topic = message.topic
         payload = message.payload.decode(errors="replace") if message.payload else ""
-
-        # Any inbound message proves the subscription delivery path is alive.
-        self._last_mqtt_rx = time.monotonic()
-
-        # Health ping topic: liveness is confirmed via the QoS-1 PUBACK, not this
-        # echo, but if the broker does deliver it back, swallow it here (before the
-        # "/bridge/" skip) so it's never treated as a device command.
-        if topic == f"{self.base_topic}/bridge/ping":
-            return
 
         _LOGGER.debug("MQTT message: %s = %s", topic, payload)
 
@@ -574,8 +548,7 @@ class PushokMqttBridge:
         self._publish_bridge_devices()
         self._publish_all_states()
 
-        # 2. Now subscribe. The health ping topic {base}/bridge/ping is delivered
-        #    by the {base}/+/+ subscription, so it needs no separate subscribe.
+        # 2. Now subscribe.
         client.subscribe(f"{self.base_topic}/+/set")        # JSON commands
         client.subscribe(f"{self.base_topic}/+")            # Main device topic
         client.subscribe(f"{self.base_topic}/+/+")          # Individual property topics
@@ -732,90 +705,44 @@ class PushokMqttBridge:
                 await self._handle_object_remove(device_id)
 
     async def _mqtt_health_loop(self) -> None:
-        """Actively detect a dead MQTT link and force a reconnect.
+        """Backstop reconnect watchdog for MQTT.
 
-        paho's keepalive only catches a broken TCP socket. It does NOT reliably
-        catch a broker that has quietly stopped responding while the socket lingers
-        half-open.
+        A real broken link is detected by paho's native keepalive (PINGREQ /
+        PINGRESP at the protocol level), which fires on_disconnect and triggers
+        paho's own auto-reconnect. We do NOT add an application-level round-trip
+        ping: iobroker's broker does not echo a client its own publications in
+        real time, so such a probe false-positives during quiet periods and
+        would reconnect a perfectly healthy link (causing a retained-replay
+        storm on resubscribe).
 
-        Branch B actively confirms the broker is alive by publishing a QoS-1 ping
-        and waiting for its PUBACK. We deliberately do NOT rely on the ping being
-        echoed back through our own subscription: some brokers (iobroker's among
-        them) never deliver a client its own publications, which would make a
-        round-trip check false-positive. Branch A force-reconnects if paho's own
-        auto-reconnect appears to have stalled.
+        This loop only backstops the rare case where paho reports the socket
+        disconnected but its own auto-reconnect appears to have stalled.
         """
-        PING_INTERVAL = 30      # seconds between health checks
-        PONG_TIMEOUT = 20       # how long to wait for the broker's PUBACK
+        CHECK_INTERVAL = 30     # seconds between checks
         RECONNECT_STALL = 90    # force reconnect if disconnected at least this long
 
         while self._running:
             try:
-                await asyncio.sleep(PING_INTERVAL)
+                await asyncio.sleep(CHECK_INTERVAL)
             except asyncio.CancelledError:
                 return
 
             client = self._mqtt_client
-            if not client:
+            if not client or self._mqtt_connected:
                 continue
 
             now = time.monotonic()
-
-            # Branch A: not connected — has paho's own auto-reconnect stalled?
-            if not self._mqtt_connected:
-                since = self._mqtt_disconnected_since or now
-                if self._mqtt_ever_connected and now - since > RECONNECT_STALL:
-                    _LOGGER.warning(
-                        "MQTT still disconnected after %ds; forcing reconnect",
-                        RECONNECT_STALL,
-                    )
-                    try:
-                        client.reconnect()
-                    except Exception as e:
-                        _LOGGER.warning("Forced MQTT reconnect failed: %s", e)
-                    self._mqtt_disconnected_since = now
-                continue
-
-            # Branch B: connected but quiet — confirm the broker with a QoS-1
-            # PUBACK round-trip. Skip if we've had recent inbound traffic.
-            if now - self._last_mqtt_rx < PING_INTERVAL:
-                continue
-
-            self._ping_acked = False
-            self._ping_counter += 1
-            try:
-                info = client.publish(
-                    f"{self.base_topic}/bridge/ping",
-                    str(self._ping_counter),
-                    qos=1,
-                    retain=False,
-                )
-                self._ping_mid = info.mid
-            except Exception as e:
-                _LOGGER.warning("MQTT health ping publish failed: %s", e)
-                info = None
-
-            waited = 0.0
-            while info is not None and waited < PONG_TIMEOUT and not self._ping_acked:
-                try:
-                    await asyncio.sleep(1)
-                except asyncio.CancelledError:
-                    return
-                waited += 1
-
-            if self._ping_acked:
-                _LOGGER.debug("MQTT health ping acked after %.0fs", waited)
-            else:
+            since = self._mqtt_disconnected_since or now
+            if self._mqtt_ever_connected and now - since > RECONNECT_STALL:
                 _LOGGER.warning(
-                    "MQTT broker did not ack health ping within %ds; forcing reconnect",
-                    PONG_TIMEOUT,
+                    "MQTT still disconnected after %ds; forcing reconnect",
+                    RECONNECT_STALL,
                 )
-                self._mqtt_connected = False
-                self._mqtt_disconnected_since = time.monotonic()
                 try:
                     client.reconnect()
                 except Exception as e:
                     _LOGGER.warning("Forced MQTT reconnect failed: %s", e)
+                self._mqtt_disconnected_since = now
 
     async def _handle_object_update(self, data: dict[str, Any]) -> None:
         """Handle object update from hub."""
