@@ -438,9 +438,25 @@ class PushokMqttBridge:
 
     def _on_mqtt_message(self, client: mqtt.Client, userdata: Any,
                          message: mqtt.MQTTMessage) -> None:
+        """Paho callback wrapper.
+
+        An exception escaping here would kill paho's network thread and silently
+        freeze ALL MQTT traffic (no PINGREQ, no PUBACK, no delivery) with no
+        recovery. Contain every error so a single bad message can't do that.
+        """
+        try:
+            self._handle_mqtt_message(client, userdata, message)
+        except Exception:
+            _LOGGER.exception(
+                "Error handling MQTT message on %s; connection kept alive",
+                getattr(message, "topic", "?"),
+            )
+
+    def _handle_mqtt_message(self, client: mqtt.Client, userdata: Any,
+                             message: mqtt.MQTTMessage) -> None:
         """Handle incoming MQTT message."""
         topic = message.topic
-        payload = message.payload.decode() if message.payload else ""
+        payload = message.payload.decode(errors="replace") if message.payload else ""
 
         # Any inbound message proves the subscription delivery path is alive.
         self._last_mqtt_rx = time.monotonic()
