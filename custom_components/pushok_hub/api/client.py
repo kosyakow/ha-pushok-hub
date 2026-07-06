@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any, Callable
 
 import websockets
@@ -84,11 +85,13 @@ class PushokHubClient:
         self._command_id = 0
         self._pending_commands: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self._receive_task: asyncio.Task | None = None
+        self._watchdog_task: asyncio.Task | None = None
         self._broadcast_callback: Callable[[dict[str, Any]], None] | None = None
         self._connection_lost_callback: Callable[[], None] | None = None
         self._connected = False
         self._authorized = False
         self._role: int = 0
+        self._last_msg_time: float = 0.0
 
     @property
     def connected(self) -> bool:
@@ -139,7 +142,9 @@ class PushokHubClient:
                 ping_timeout=15,
             )
             self._connected = True
+            self._last_msg_time = time.monotonic()
             self._receive_task = asyncio.create_task(self._receive_loop())
+            self._watchdog_task = asyncio.create_task(self._watchdog_loop())
 
             # Authenticate
             await self._authenticate()
@@ -156,6 +161,14 @@ class PushokHubClient:
         """Disconnect from the hub."""
         self._connected = False
         self._authorized = False
+
+        if self._watchdog_task:
+            self._watchdog_task.cancel()
+            try:
+                await self._watchdog_task
+            except asyncio.CancelledError:
+                pass
+            self._watchdog_task = None
 
         if self._receive_task:
             self._receive_task.cancel()
@@ -292,6 +305,7 @@ class PushokHubClient:
 
         try:
             async for message in self._ws:
+                self._last_msg_time = time.monotonic()
                 try:
                     if isinstance(message, bytes):
                         # Binary message handling (for file operations)
@@ -331,6 +345,48 @@ class PushokHubClient:
             _LOGGER.exception("Unexpected error in receive loop; not triggering reconnect")
             self._connected = False
             self._authorized = False
+
+    async def _watchdog_loop(self) -> None:
+        """Detect a wedged-but-open hub connection and force a reconnect.
+
+        The websockets ping/pong keepalive already tears down a truly broken
+        socket. What it can't catch is a hub that answers protocol pings but has
+        stopped sending application data — the receive loop then blocks forever.
+
+        The hub sends no heartbeat, so application silence alone doesn't mean the
+        link is dead (a quiet night looks identical). So on prolonged silence we
+        actively probe with a lightweight command; only if the probe fails (times
+        out / errors) do we tear the connection down, which makes the receive loop
+        exit and fires the connection-lost callback that triggers a reconnect.
+        """
+        PROBE_AFTER = 120.0  # seconds of silence before probing
+        while True:
+            await asyncio.sleep(30)
+            if not self._connected:
+                return
+            if time.monotonic() - self._last_msg_time < PROBE_AFTER:
+                continue
+
+            # Silent for a while — verify the link is actually alive. A successful
+            # response updates _last_msg_time via _receive_loop.
+            try:
+                await self._send_command(CMD_LIST_OBJECTS, {"type": ENTITY_TYPE_ZIGBEE})
+                continue
+            except Exception as e:
+                _LOGGER.warning("Watchdog probe failed (%s); forcing reconnect", e)
+
+            was_connected = self._connected
+            self._connected = False
+            self._authorized = False
+            if self._ws:
+                try:
+                    await self._ws.close()
+                except Exception:
+                    pass
+                self._ws = None
+            if was_connected and self._connection_lost_callback:
+                self._connection_lost_callback()
+            return
 
     def _handle_broadcast(self, data: dict[str, Any]) -> None:
         """Handle broadcast message from hub."""
