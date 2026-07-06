@@ -371,6 +371,12 @@ class PushokMqttBridge:
         self._mqtt_client.on_message = self._on_mqtt_message
         self._mqtt_client.on_publish = self._on_mqtt_publish
 
+        # At DEBUG, route paho's own protocol log (PINGREQ/PINGRESP, PUBACK,
+        # CONNACK, and DISCONNECT reason codes) through our logger so a real
+        # broker-side drop is visible instead of just its symptom.
+        if self._config.log_level.upper() == "DEBUG":
+            self._mqtt_client.enable_logger(_LOGGER)
+
         _LOGGER.info("Connecting to MQTT broker at %s:%d",
                      self._config.mqtt.host, self._config.mqtt.port)
 
@@ -781,7 +787,9 @@ class PushokMqttBridge:
                     return
                 waited += 1
 
-            if not self._ping_acked:
+            if self._ping_acked:
+                _LOGGER.debug("MQTT health ping acked after %.0fs", waited)
+            else:
                 _LOGGER.warning(
                     "MQTT broker did not ack health ping within %ds; forcing reconnect",
                     PONG_TIMEOUT,
