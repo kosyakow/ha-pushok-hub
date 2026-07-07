@@ -23,6 +23,7 @@ from ..const import (
     CMD_PUB_KEY,
     CMD_SET_STATE,
     COMMAND_TIMEOUT,
+    ENTITY_TYPE_GATEWAY,
     ENTITY_TYPE_ZIGBEE,
     EVT_OBJECT_UPDATE,
     ROLE_ADMIN,
@@ -367,10 +368,12 @@ class PushokHubClient:
             if time.monotonic() - self._last_msg_time < PROBE_AFTER:
                 continue
 
-            # Silent for a while — verify the link is actually alive. A successful
-            # response updates _last_msg_time via _receive_loop.
+            # Silent for a while — verify the link is actually alive. Probe the
+            # gateway object list: always tiny (just the hub itself), so it's the
+            # cheapest round-trip. A successful response updates _last_msg_time
+            # via _receive_loop.
             try:
-                await self._send_command(CMD_LIST_OBJECTS, {"type": ENTITY_TYPE_ZIGBEE})
+                await self._send_command(CMD_LIST_OBJECTS, {"type": ENTITY_TYPE_GATEWAY})
                 continue
             except Exception as e:
                 _LOGGER.warning("Watchdog probe failed (%s); forcing reconnect", e)
