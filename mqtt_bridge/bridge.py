@@ -316,6 +316,13 @@ class PushokMqttBridge:
 
             try:
                 if self._hub_client:
+                    # Tear down the previous connection first: connect() spawns a
+                    # fresh receive/watchdog task pair, and without this the old
+                    # watchdog survives (its `if not self._connected` guard sees
+                    # _connected flipped back to True at reconnect) and accumulates
+                    # one extra probing task per hub flap. The HA coordinator does
+                    # the same disconnect-before-connect.
+                    await self._hub_client.disconnect()
                     await self._hub_client.connect()
                     self._hub_connected = True
                     _LOGGER.info("Reconnected to hub")
@@ -738,11 +745,40 @@ class PushokMqttBridge:
                     "MQTT still disconnected after %ds; forcing reconnect",
                     RECONNECT_STALL,
                 )
-                try:
-                    client.reconnect()
-                except Exception as e:
-                    _LOGGER.warning("Forced MQTT reconnect failed: %s", e)
+                # Reconnect OFF the event loop: client.reconnect() does a
+                # blocking socket.create_connection() that would otherwise freeze
+                # every bridge task (hub receive loop, watchdog, callbacks) for up
+                # to the connect timeout. The helper also stops paho's network
+                # thread first — so we don't race its own auto-reconnect on the
+                # socket — and starts a fresh one after: a bare reconnect() opens a
+                # socket that nothing pumps if that thread had died, which is
+                # exactly the wedged case this backstop is meant to rescue.
+                if self._loop:
+                    await self._loop.run_in_executor(
+                        None, self._force_mqtt_reconnect, client
+                    )
                 self._mqtt_disconnected_since = now
+
+    def _force_mqtt_reconnect(self, client: mqtt.Client) -> None:
+        """Restart paho's network loop from a worker thread.
+
+        Called via run_in_executor so the blocking socket connect never stalls
+        the asyncio loop. loop_stop() joins the current network thread (avoiding a
+        concurrent reconnect on the socket); loop_start() revives the thread that
+        actually pumps the socket so CONNACK gets read and on_connect fires.
+        """
+        try:
+            client.loop_stop()
+        except Exception as e:
+            _LOGGER.debug("loop_stop during forced reconnect: %s", e)
+        try:
+            client.reconnect()
+        except Exception as e:
+            _LOGGER.warning("Forced MQTT reconnect failed: %s", e)
+        try:
+            client.loop_start()
+        except Exception as e:
+            _LOGGER.warning("loop_start after forced reconnect failed: %s", e)
 
     async def _handle_object_update(self, data: dict[str, Any]) -> None:
         """Handle object update from hub."""
