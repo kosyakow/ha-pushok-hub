@@ -29,7 +29,9 @@ from custom_components.pushok_hub.api.models import (
 from custom_components.pushok_hub.const import (
     ENTITY_TYPE_AUTOMATION,
     ENTITY_TYPE_ZIGBEE,
+    TOTAL_INCREASING_DEVICE_CLASSES,
     UNIT_MAPPING,
+    resolve_sensor_device_class,
 )
 
 import paho.mqtt.client as mqtt
@@ -1238,6 +1240,22 @@ class PushokMqttBridge:
                     unit = param.view_params.get("unit")
                     if unit:
                         config_payload["unit_of_measurement"] = UNIT_MAPPING.get(unit, unit)
+                    # Labeled int params publish label strings (enum-like), so
+                    # they must not carry a numeric state/device class. Mirrors
+                    # the enum detection in the integration's sensor.py.
+                    is_enum = bool(param.labels) and param.param_type != "float" and not unit
+                    if not is_enum:
+                        # device_class only alongside a unit: HA rejects the
+                        # whole MQTT config for unit-requiring classes without
+                        # one, and then the entity is never created.
+                        device_class = resolve_sensor_device_class(name, unit) if unit else None
+                        if device_class:
+                            config_payload["device_class"] = device_class
+                        config_payload["state_class"] = (
+                            "total_increasing"
+                            if device_class in TOTAL_INCREASING_DEVICE_CLASSES
+                            else "measurement"
+                        )
             else:
                 continue
 

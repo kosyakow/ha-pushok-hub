@@ -13,7 +13,12 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, MAX_FIELD_ID, SENSOR_DEVICE_CLASS_MAPPING
+from .const import (
+    DOMAIN,
+    MAX_FIELD_ID,
+    TOTAL_INCREASING_DEVICE_CLASSES,
+    resolve_sensor_device_class,
+)
 from .coordinator import PushokHubCoordinator
 from .entity import PushokHubEntity
 
@@ -91,28 +96,26 @@ class PushokHubSensor(PushokHubEntity, SensorEntity):
             self._attr_device_class = SensorDeviceClass.ENUM
             self._attr_options = sorted(set(self._value_to_label.values()))
         else:
-            self._attr_state_class = SensorStateClass.MEASUREMENT
+            raw_unit = (
+                self._adapter_param.view_params.get("unit")
+                if self._adapter_param else None
+            )
+            device_class_str = resolve_sensor_device_class(
+                self._adapter_param.name if self._adapter_param else None,
+                raw_unit,
+            )
+            if device_class_str:
+                try:
+                    self._attr_device_class = SensorDeviceClass(device_class_str)
+                except ValueError:
+                    device_class_str = None
 
-            if self._adapter_param and self._adapter_param.name:
-                param_name = self._adapter_param.name.lower()
-                device_class_str = SENSOR_DEVICE_CLASS_MAPPING.get(param_name)
-                # Reconcile name-based class with actual unit. A param named
-                # "battery" can carry voltage (mV/V) on some drivers; HA will
-                # reject device_class=battery without unit "%".
-                raw_unit = (
-                    self._adapter_param.view_params.get("unit")
-                    if self._adapter_param else None
-                )
-                if device_class_str == "battery" and raw_unit and raw_unit != "unit_%":
-                    if raw_unit in ("unit_mV", "unit_voltage", "unit_V"):
-                        device_class_str = "voltage"
-                    else:
-                        device_class_str = None
-                if device_class_str:
-                    try:
-                        self._attr_device_class = SensorDeviceClass(device_class_str)
-                    except ValueError:
-                        pass
+            # Cumulative counters (energy) need total_increasing: measurement
+            # would require a last_reset attribute and breaks statistics.
+            if device_class_str in TOTAL_INCREASING_DEVICE_CLASSES:
+                self._attr_state_class = SensorStateClass.TOTAL_INCREASING
+            else:
+                self._attr_state_class = SensorStateClass.MEASUREMENT
 
             if unit:
                 self._attr_native_unit_of_measurement = unit

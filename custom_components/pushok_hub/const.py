@@ -1,5 +1,7 @@
 """Constants for the Pushok Hub integration."""
 
+from __future__ import annotations
+
 from typing import Final
 
 DOMAIN: Final = "pushok_hub"
@@ -139,6 +141,28 @@ SENSOR_DEVICE_CLASS_MAPPING: Final = {
     "signal_strength": "signal_strength",
     "distance": "distance",
 }
+
+# Device classes that are cumulative counters. HA requires state_class
+# "total_increasing" for them: "measurement" would demand a last_reset
+# attribute and breaks long-term statistics / the Energy dashboard.
+TOTAL_INCREASING_DEVICE_CLASSES: Final = {"energy"}
+
+
+def resolve_sensor_device_class(name: str | None, raw_unit: str | None) -> str | None:
+    """Map a param name to an HA sensor device class, reconciled with the unit.
+
+    A param named "battery" can carry voltage (mV/V) on some drivers; HA
+    rejects device_class=battery unless the unit is "%".
+    """
+    if not name:
+        return None
+    device_class = SENSOR_DEVICE_CLASS_MAPPING.get(name.lower())
+    if device_class == "battery" and raw_unit and raw_unit != "unit_%":
+        if raw_unit in ("unit_mV", "unit_voltage", "unit_V"):
+            return "voltage"
+        return None
+    return device_class
+
 
 # Binary sensor device class mappings: param name -> BinarySensorDeviceClass
 BINARY_SENSOR_DEVICE_CLASS_MAPPING: Final = {
