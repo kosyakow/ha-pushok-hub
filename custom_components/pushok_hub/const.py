@@ -147,21 +147,49 @@ SENSOR_DEVICE_CLASS_MAPPING: Final = {
 # attribute and breaks long-term statistics / the Energy dashboard.
 TOTAL_INCREASING_DEVICE_CLASSES: Final = {"energy"}
 
+# Raw adapter units HA accepts for each sensor device class. An MQTT
+# discovery config whose unit_of_measurement is invalid for its device_class
+# is rejected wholesale (the entity is never created), so a class is only
+# published when the unit fits. A class missing here accepts any unit.
+SENSOR_DEVICE_CLASS_UNITS: Final = {
+    "temperature": {"unit_C", "unit_F"},
+    "humidity": {"unit_%"},
+    "pressure": {"unit_Pa", "unit_hPa", "unit_kPa", "unit_bar", "unit_mbar"},
+    "battery": {"unit_%"},
+    "voltage": {"unit_voltage", "unit_V", "unit_mV", "unit_kV"},
+    "current": {"unit_A", "unit_mA"},
+    "power": {"unit_power", "unit_kW"},
+    "energy": {"unit_energy"},
+    "illuminance": {"unit_lux"},
+    "co2": {"unit_ppm"},
+    "pm25": {"unit_ug_m3", "unit_ugm3"},
+    "pm10": {"unit_ug_m3", "unit_ugm3"},
+    "volatile_organic_compounds": {"unit_ug_m3", "unit_ugm3"},
+    "frequency": {"unit_Hz", "unit_kHz", "unit_MHz"},
+    "signal_strength": {"unit_dB"},
+    "distance": {"unit_mm", "unit_cm", "unit_m", "unit_km"},
+}
+
 
 def resolve_sensor_device_class(name: str | None, raw_unit: str | None) -> str | None:
     """Map a param name to an HA sensor device class, reconciled with the unit.
 
-    A param named "battery" can carry voltage (mV/V) on some drivers; HA
-    rejects device_class=battery unless the unit is "%".
+    Drivers sometimes pair a mapped name with a unit HA won't accept for that
+    class (a "battery" param carrying mV, "pressure" in mPa). Battery voltage
+    is remapped to the voltage class; any other mismatch drops the class —
+    better no device_class than a rejected entity.
     """
     if not name:
         return None
     device_class = SENSOR_DEVICE_CLASS_MAPPING.get(name.lower())
-    if device_class == "battery" and raw_unit and raw_unit != "unit_%":
-        if raw_unit in ("unit_mV", "unit_voltage", "unit_V"):
-            return "voltage"
-        return None
-    return device_class
+    if not device_class or not raw_unit:
+        return device_class
+    allowed_units = SENSOR_DEVICE_CLASS_UNITS.get(device_class)
+    if allowed_units is None or raw_unit in allowed_units:
+        return device_class
+    if device_class == "battery" and raw_unit in SENSOR_DEVICE_CLASS_UNITS["voltage"]:
+        return "voltage"
+    return None
 
 
 # Binary sensor device class mappings: param name -> BinarySensorDeviceClass

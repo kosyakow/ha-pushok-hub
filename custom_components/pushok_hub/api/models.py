@@ -252,6 +252,20 @@ class AdapterParam:
         """Check if parameter is writable."""
         return "w" in self.access
 
+    @property
+    def is_enum_like(self) -> bool:
+        """True when the param's state is a label string, not a number.
+
+        Float params and params carrying a measurement unit are numeric
+        measurements that merely have named threshold markers in `labels`;
+        their labels are ignored for state purposes.
+        """
+        return (
+            bool(self.labels)
+            and self.param_type != "float"
+            and not self.view_params.get("unit")
+        )
+
 
 @dataclass
 class DeviceAdapter:

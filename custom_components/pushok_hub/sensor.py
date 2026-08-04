@@ -85,12 +85,9 @@ class PushokHubSensor(PushokHubEntity, SensorEntity):
 
         unit = self._get_ha_unit()
 
-        # Distinguish pure enum params from numeric measurements that merely have
-        # named threshold markers in `labels`. Float params and params carrying a
-        # measurement unit are treated as numeric — their `labels` are ignored
-        # for state purposes.
-        param_type = self._adapter_param.param_type if self._adapter_param else None
-        self._is_enum = bool(self._value_to_label) and param_type != "float" and not unit
+        # Pure enum params vs numeric measurements that merely have named
+        # threshold markers in `labels` — see AdapterParam.is_enum_like.
+        self._is_enum = bool(self._adapter_param and self._adapter_param.is_enum_like)
 
         if self._is_enum:
             self._attr_device_class = SensorDeviceClass.ENUM
