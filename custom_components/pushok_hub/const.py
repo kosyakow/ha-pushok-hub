@@ -152,8 +152,7 @@ TOTAL_INCREASING_DEVICE_CLASSES: Final = {"energy"}
 # is rejected wholesale (the entity is never created), so a class is only
 # published when a unit is present AND fits. Every class used in the mapping
 # above must have an entry here, every unit must exist in UNIT_MAPPING, and
-# every pair must be valid per HA's own rules — tests/test_device_classes.py
-# enforces all three against a snapshot of HA's validation tables.
+# every pair must be valid per HA's own validation tables.
 SENSOR_DEVICE_CLASS_UNITS: Final = {
     "temperature": {"unit_C", "unit_F"},
     "humidity": {"unit_%"},
