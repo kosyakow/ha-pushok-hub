@@ -30,8 +30,7 @@ from custom_components.pushok_hub.const import (
     ENTITY_TYPE_AUTOMATION,
     ENTITY_TYPE_ZIGBEE,
     UNIT_MAPPING,
-    resolve_sensor_device_class,
-    resolve_sensor_state_class,
+    resolve_sensor_classes,
 )
 
 import paho.mqtt.client as mqtt
@@ -1251,20 +1250,15 @@ class PushokMqttBridge:
                     if unit:
                         config_payload["unit_of_measurement"] = UNIT_MAPPING.get(unit, unit)
                     # Labeled int params publish label strings (enum-like), so
-                    # they must not carry a numeric state/device class.
+                    # they must not carry a numeric state/device class. For
+                    # everything else the helper yields a pair that is safe to
+                    # publish as-is — see resolve_sensor_classes.
                     if not param.is_enum_like:
-                        # The helper only yields a class together with a unit
-                        # HA accepts for it — a mismatched pair would get the
-                        # whole MQTT config rejected.
-                        device_class = resolve_sensor_device_class(name, unit)
+                        device_class, state_class = resolve_sensor_classes(name, unit)
                         if device_class:
                             config_payload["device_class"] = device_class
-                        # state_class only for real measurements — a
-                        # recognized class or at least a unit. Unit-less
-                        # unclassified ints (ids, codes, raw counters) must
-                        # not grow long-term statistics in HA.
-                        if device_class or unit:
-                            config_payload["state_class"] = resolve_sensor_state_class(name)
+                        if state_class:
+                            config_payload["state_class"] = state_class
             else:
                 continue
 

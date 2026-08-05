@@ -173,44 +173,55 @@ SENSOR_DEVICE_CLASS_UNITS: Final = {
 }
 
 
-def resolve_sensor_device_class(name: str | None, raw_unit: str | None) -> str | None:
-    """Map a param name to an HA sensor device class, reconciled with the unit.
+def resolve_sensor_classes(
+    name: str | None, raw_unit: str | None
+) -> tuple[str | None, str | None]:
+    """Resolve the (device_class, state_class) pair for a numeric sensor param.
 
-    A class is only ever returned together with a unit HA accepts for it:
-    every mapped class is unit-requiring, so a param without a unit — or with
-    one HA rejects for that class (a "battery" param carrying mV) — gets no
-    class at all. Better no device_class than a rejected MQTT config or a
-    unit-mismatch warning. The one remap: "battery" in volt units becomes
-    the voltage class.
-    """
-    if not name:
-        return None
-    device_class = SENSOR_DEVICE_CLASS_MAPPING.get(name.lower())
-    if not device_class or not raw_unit:
-        return None
-    # Fail closed: a class with no SENSOR_DEVICE_CLASS_UNITS entry gets no
-    # class at all — skipping the unit guard would let an invalid class/unit
-    # pair through and HA would reject the whole MQTT discovery config.
-    allowed_units = SENSOR_DEVICE_CLASS_UNITS.get(device_class)
-    if allowed_units and raw_unit in allowed_units:
-        return device_class
-    if device_class == "battery" and raw_unit in SENSOR_DEVICE_CLASS_UNITS["voltage"]:
-        return "voltage"
-    return None
+    device_class is only ever returned together with a unit HA accepts for
+    it: every mapped class is unit-requiring, so a param without a unit — or
+    with one HA rejects for that class (a "battery" param carrying mV) —
+    gets no class at all. Better no device_class than a rejected MQTT config
+    or a unit-mismatch warning. The one remap: "battery" in volt units
+    becomes the voltage class.
 
-
-def resolve_sensor_state_class(name: str | None) -> str:
-    """Pick the HA state class for a numeric (non-enum) sensor param.
-
-    Deliberately name-based, independent of unit validity: a cumulative
-    counter stays cumulative even when its unit is missing or wrong for the
-    device class — publishing "measurement" there would feed a monotonic
-    counter into HA long-term statistics as a gauge.
+    state_class is granted only to real measurements — a resolved device
+    class or at least a unit known to UNIT_MAPPING. Unclassified numbers
+    with no recognized unit (ids, codes, raw counters) must not grow HA
+    long-term statistics; an unmapped unit is published raw, and statistics
+    recorded under it would break the day the unit gets mapped. Cumulative
+    counters get "total_increasing": "measurement" would demand a last_reset
+    attribute and breaks statistics. Cumulativeness follows the resolved
+    device class when there is one and falls back to the name-based class
+    otherwise, so a counter stays cumulative even when its unit is wrong
+    for the class.
     """
     named_class = SENSOR_DEVICE_CLASS_MAPPING.get(name.lower()) if name else None
-    if named_class in TOTAL_INCREASING_DEVICE_CLASSES:
-        return "total_increasing"
-    return "measurement"
+
+    device_class = None
+    if named_class and raw_unit:
+        # Fail closed: a class with no SENSOR_DEVICE_CLASS_UNITS entry gets
+        # no class at all — skipping the unit guard would let an invalid
+        # class/unit pair through and HA would reject the whole MQTT
+        # discovery config.
+        if raw_unit in SENSOR_DEVICE_CLASS_UNITS.get(named_class, ()):
+            device_class = named_class
+        elif (
+            named_class == "battery"
+            and raw_unit in SENSOR_DEVICE_CLASS_UNITS.get("voltage", ())
+        ):
+            device_class = "voltage"
+
+    state_class = None
+    if device_class or (raw_unit and raw_unit in UNIT_MAPPING):
+        effective_class = device_class or named_class
+        state_class = (
+            "total_increasing"
+            if effective_class in TOTAL_INCREASING_DEVICE_CLASSES
+            else "measurement"
+        )
+
+    return device_class, state_class
 
 
 # Binary sensor device class mappings: param name -> BinarySensorDeviceClass

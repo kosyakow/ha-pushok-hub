@@ -16,8 +16,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import (
     DOMAIN,
     MAX_FIELD_ID,
-    resolve_sensor_device_class,
-    resolve_sensor_state_class,
+    resolve_sensor_classes,
 )
 from .coordinator import PushokHubCoordinator
 from .entity import PushokHubEntity
@@ -98,22 +97,17 @@ class PushokHubSensor(PushokHubEntity, SensorEntity):
                 if self._adapter_param else None
             )
             param_name = self._adapter_param.name if self._adapter_param else None
-            device_class_str = resolve_sensor_device_class(param_name, raw_unit)
+            device_class_str, state_class_str = resolve_sensor_classes(
+                param_name, raw_unit
+            )
             if device_class_str:
                 try:
                     self._attr_device_class = SensorDeviceClass(device_class_str)
                 except ValueError:
-                    device_class_str = None
-
-            # State class only for real measurements — a recognized device
-            # class or at least a unit. Unit-less unclassified numbers (ids,
-            # codes, raw counters) must not grow long-term statistics.
-            # Cumulative counters (energy) need total_increasing: measurement
-            # is not a valid state class for them and breaks statistics.
-            if device_class_str or unit:
-                self._attr_state_class = SensorStateClass(
-                    resolve_sensor_state_class(param_name)
-                )
+                    # Older HA cores may lack a class from the mapping table.
+                    pass
+            if state_class_str:
+                self._attr_state_class = SensorStateClass(state_class_str)
 
             if unit:
                 self._attr_native_unit_of_measurement = unit
