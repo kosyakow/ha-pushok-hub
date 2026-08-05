@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """Consistency tests for the sensor device class tables and helpers.
 
 Usage:
@@ -7,11 +6,15 @@ Usage:
     pytest tests/                          # also works
 
 The HA_* snapshots below are taken from Home Assistant 2026.1.2
-(homeassistant.components.sensor: SensorDeviceClass, DEVICE_CLASS_UNITS).
-Refresh them when targeting a newer HA release.
+(homeassistant.components.sensor: SensorDeviceClass, DEVICE_CLASS_UNITS,
+DEVICE_CLASS_STATE_CLASSES), verified against the 2026.1.2 source. When
+homeassistant is importable, test_snapshots_match_installed_ha re-verifies
+every snapshot against the live tables; refresh them when it fails on a
+newer HA release.
 """
 
 import sys
+import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -47,8 +50,10 @@ HA_SENSOR_DEVICE_CLASSES = {
 
 # Units HA accepts per device class (only the classes this project maps).
 # HA spells micro with GREEK SMALL LETTER MU (U+03BC); UNIT_MAPPING uses
-# MICRO SIGN (U+00B5), which HA normalizes via AMBIGUOUS_UNITS before
-# validating — _ha_normalize() mirrors that.
+# MICRO SIGN (U+00B5), which HA normalizes before any unit validation:
+# sensor.SensorEntity.__native_unit_of_measurement_compat runs every
+# sensor's unit (including MQTT-discovered ones) through AMBIGUOUS_UNITS.
+# _ha_normalize() mirrors that.
 HA_DEVICE_CLASS_UNITS = {
     "temperature": {"K", "°C", "°F"},
     "humidity": {"%"},
@@ -68,6 +73,30 @@ HA_DEVICE_CLASS_UNITS = {
     "frequency": {"GHz", "Hz", "MHz", "kHz"},
     "signal_strength": {"dB", "dBm"},
     "distance": {"cm", "ft", "in", "km", "m", "mi", "mm", "nmi", "yd"},
+}
+
+
+# State classes HA allows per device class (only the classes this project
+# maps). Publishing a state_class outside this set (e.g. the old
+# "measurement" on an energy sensor) is invalid — HA warns and statistics
+# break. From homeassistant.components.sensor.DEVICE_CLASS_STATE_CLASSES.
+HA_DEVICE_CLASS_STATE_CLASSES = {
+    "temperature": {"measurement"},
+    "humidity": {"measurement"},
+    "pressure": {"measurement"},
+    "battery": {"measurement"},
+    "voltage": {"measurement"},
+    "current": {"measurement"},
+    "power": {"measurement"},
+    "energy": {"total", "total_increasing"},
+    "illuminance": {"measurement"},
+    "carbon_dioxide": {"measurement"},
+    "pm25": {"measurement"},
+    "pm10": {"measurement"},
+    "volatile_organic_compounds": {"measurement"},
+    "frequency": {"measurement"},
+    "signal_strength": {"measurement"},
+    "distance": {"measurement", "measurement_angle", "total", "total_increasing"},
 }
 
 
@@ -133,9 +162,33 @@ def test_total_increasing_classes_are_valid():
     assert TOTAL_INCREASING_DEVICE_CLASSES <= HA_SENSOR_DEVICE_CLASSES
 
 
+def test_emitted_state_class_is_valid_for_every_class():
+    # Regression: HA validates state_class against device_class
+    # (DEVICE_CLASS_STATE_CLASSES) — "measurement" on an energy sensor is
+    # exactly the invalid pair this PR started from.
+    for device_class in set(SENSOR_DEVICE_CLASS_MAPPING.values()):
+        emitted = (
+            "total_increasing"
+            if device_class in TOTAL_INCREASING_DEVICE_CLASSES
+            else "measurement"
+        )
+        allowed = HA_DEVICE_CLASS_STATE_CLASSES.get(device_class)
+        assert allowed is not None, (
+            f"no HA state-class snapshot for {device_class!r} — add it from "
+            f"homeassistant.components.sensor.DEVICE_CLASS_STATE_CLASSES"
+        )
+        assert emitted in allowed, (
+            f"we would publish state_class {emitted!r} for device class "
+            f"{device_class!r}, but HA only allows {sorted(allowed)}"
+        )
+
+
 def test_resolve_basic_mapping():
     assert resolve_sensor_device_class("temperature", "unit_C") == "temperature"
     assert resolve_sensor_device_class("Temperature", "unit_F") == "temperature"
+    # HA's UnitOfPressure includes millipascal ("mPa"), so the hub's
+    # unit_mPa keeps the pressure class.
+    assert resolve_sensor_device_class("pressure", "unit_mPa") == "pressure"
     assert resolve_sensor_device_class(None, "unit_C") is None
     assert resolve_sensor_device_class("no_such_param", "unit_C") is None
 
@@ -150,7 +203,7 @@ def test_resolve_co2_is_carbon_dioxide():
 
 
 def test_resolve_drops_class_on_unit_mismatch():
-    assert resolve_sensor_device_class("pressure", "unit_mPa") is None
+    assert resolve_sensor_device_class("pressure", "unit_mm") is None
     assert resolve_sensor_device_class("battery", "unit_s") is None
     # unit_V is not a real hub unit (absent from UNIT_MAPPING) and must not
     # be treated as a voltage spelling.
@@ -175,6 +228,55 @@ def test_is_enum_like():
     assert not _param().is_enum_like
 
 
+def test_snapshots_match_installed_ha():
+    """Verify every HA_* snapshot against an installed homeassistant.
+
+    Skipped when homeassistant is not importable (the standalone runner and
+    the bridge venv). Run inside an HA venv to validate the snapshots for
+    the release actually deployed.
+    """
+    try:
+        from homeassistant.components.sensor import (
+            DEVICE_CLASS_STATE_CLASSES,
+            DEVICE_CLASS_UNITS,
+            SensorDeviceClass,
+        )
+    except ImportError as exc:
+        raise unittest.SkipTest(f"homeassistant not installed ({exc})") from exc
+
+    real_classes = {cls.value for cls in SensorDeviceClass}
+    assert HA_SENSOR_DEVICE_CLASSES == real_classes, (
+        f"HA_SENSOR_DEVICE_CLASSES snapshot is stale: "
+        f"missing={sorted(real_classes - HA_SENSOR_DEVICE_CLASSES)} "
+        f"extra={sorted(HA_SENSOR_DEVICE_CLASSES - real_classes)}"
+    )
+
+    for device_class, snapshot_units in HA_DEVICE_CLASS_UNITS.items():
+        real_units = {
+            str(unit)
+            for unit in DEVICE_CLASS_UNITS[SensorDeviceClass(device_class)]
+            if unit is not None
+        }
+        assert snapshot_units == real_units, (
+            f"HA_DEVICE_CLASS_UNITS[{device_class!r}] snapshot is stale: "
+            f"missing={sorted(real_units - snapshot_units)} "
+            f"extra={sorted(snapshot_units - real_units)}"
+        )
+
+    for device_class, snapshot_states in HA_DEVICE_CLASS_STATE_CLASSES.items():
+        real_states = {
+            str(state_class)
+            for state_class in DEVICE_CLASS_STATE_CLASSES[
+                SensorDeviceClass(device_class)
+            ]
+        }
+        assert snapshot_states == real_states, (
+            f"HA_DEVICE_CLASS_STATE_CLASSES[{device_class!r}] snapshot is "
+            f"stale: missing={sorted(real_states - snapshot_states)} "
+            f"extra={sorted(snapshot_states - real_states)}"
+        )
+
+
 if __name__ == "__main__":
     failed = 0
     for test_name, test_fn in sorted(globals().items()):
@@ -182,6 +284,8 @@ if __name__ == "__main__":
             try:
                 test_fn()
                 print(f"PASS {test_name}")
+            except unittest.SkipTest as exc:
+                print(f"SKIP {test_name}: {exc}")
             except AssertionError as exc:
                 failed += 1
                 print(f"FAIL {test_name}: {exc}")

@@ -157,7 +157,7 @@ TOTAL_INCREASING_DEVICE_CLASSES: Final = {"energy"}
 SENSOR_DEVICE_CLASS_UNITS: Final = {
     "temperature": {"unit_C", "unit_F"},
     "humidity": {"unit_%"},
-    "pressure": {"unit_Pa", "unit_hPa", "unit_kPa", "unit_bar", "unit_mbar"},
+    "pressure": {"unit_Pa", "unit_hPa", "unit_kPa", "unit_mPa", "unit_bar", "unit_mbar"},
     "battery": {"unit_%"},
     "voltage": {"unit_voltage", "unit_mV", "unit_kV"},
     "current": {"unit_A", "unit_mA"},
@@ -178,9 +178,9 @@ def resolve_sensor_device_class(name: str | None, raw_unit: str | None) -> str |
     """Map a param name to an HA sensor device class, reconciled with the unit.
 
     Drivers sometimes pair a mapped name with a unit HA won't accept for that
-    class (a "battery" param carrying mV, "pressure" in mPa). Battery voltage
-    is remapped to the voltage class; any other mismatch drops the class —
-    better no device_class than a rejected entity.
+    class (a "battery" param carrying mV). Battery voltage is remapped to the
+    voltage class; any other mismatch drops the class — better no
+    device_class than a rejected entity.
     """
     if not name:
         return None
