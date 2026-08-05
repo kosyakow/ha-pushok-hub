@@ -152,13 +152,18 @@ TOTAL_INCREASING_DEVICE_CLASSES: Final = {"energy"}
 # is rejected wholesale (the entity is never created), so a class is only
 # published when a unit is present AND fits. Every class used in the mapping
 # above must have an entry here, every unit must exist in UNIT_MAPPING, and
-# every pair must be valid per HA's own validation tables.
+# every pair must be valid on the OLDEST supported HA core (hacs.json
+# "homeassistant", currently 2024.1.0) — newer cores only ever widen these
+# sets. That is why mPa (pressure) and kV (voltage) are absent: HA gained
+# them only in 2025.x, and publishing them to an older core would reject the
+# whole config. Params with such units still get a state_class via
+# UNIT_MAPPING, just no device_class.
 SENSOR_DEVICE_CLASS_UNITS: Final = {
     "temperature": {"unit_C", "unit_F"},
     "humidity": {"unit_%"},
-    "pressure": {"unit_Pa", "unit_hPa", "unit_kPa", "unit_mPa", "unit_bar", "unit_mbar"},
+    "pressure": {"unit_Pa", "unit_hPa", "unit_kPa", "unit_bar", "unit_mbar"},
     "battery": {"unit_%"},
-    "voltage": {"unit_voltage", "unit_mV", "unit_kV"},
+    "voltage": {"unit_voltage", "unit_mV"},
     "current": {"unit_A", "unit_mA"},
     "power": {"unit_power", "unit_kW"},
     "energy": {"unit_energy"},
