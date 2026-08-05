@@ -949,13 +949,15 @@ class PushokMqttBridge:
 
         # Convert raw value to label — only for params whose discovery config
         # expects label payloads: bools (state_on/off), writable dropdowns
-        # (select options) and enum-like sensors. Numeric params (float or
-        # with a unit) must stay numeric: their discovery carries state_class,
-        # and a label string there breaks HA statistics.
+        # (select options) and read-only enum-like sensors. Numeric params
+        # (float or with a unit) must stay numeric: their discovery carries
+        # state_class, and a label string there breaks HA statistics. Writable
+        # non-dropdown ints are discovered as number entities, which can't
+        # parse label strings either.
         if param.labels and (
             param.param_type == "bool"
             or (param.is_writable and param.view_params.get("type") == "dropdown")
-            or param.is_enum_like
+            or (not param.is_writable and param.is_enum_like)
         ):
             for label, label_value in param.labels.items():
                 if label_value == converted:

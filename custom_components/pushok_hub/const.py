@@ -188,8 +188,11 @@ def resolve_sensor_device_class(name: str | None, raw_unit: str | None) -> str |
     device_class = SENSOR_DEVICE_CLASS_MAPPING.get(name.lower())
     if not device_class or not raw_unit:
         return None
+    # Fail closed: a class with no SENSOR_DEVICE_CLASS_UNITS entry gets no
+    # class at all — skipping the unit guard would let an invalid class/unit
+    # pair through and HA would reject the whole MQTT discovery config.
     allowed_units = SENSOR_DEVICE_CLASS_UNITS.get(device_class)
-    if allowed_units is None or raw_unit in allowed_units:
+    if allowed_units and raw_unit in allowed_units:
         return device_class
     if device_class == "battery" and raw_unit in SENSOR_DEVICE_CLASS_UNITS["voltage"]:
         return "voltage"
