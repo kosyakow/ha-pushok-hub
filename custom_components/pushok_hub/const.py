@@ -150,10 +150,10 @@ TOTAL_INCREASING_DEVICE_CLASSES: Final = {"energy"}
 # Raw adapter units HA accepts for each sensor device class. An MQTT
 # discovery config whose unit_of_measurement is invalid for its device_class
 # is rejected wholesale (the entity is never created), so a class is only
-# published when the unit fits. Every class used in the mapping above must
-# have an entry here, every unit must exist in UNIT_MAPPING, and every pair
-# must be valid per HA's own rules — tests/test_device_classes.py enforces
-# all three against a snapshot of HA's validation tables.
+# published when a unit is present AND fits. Every class used in the mapping
+# above must have an entry here, every unit must exist in UNIT_MAPPING, and
+# every pair must be valid per HA's own rules — tests/test_device_classes.py
+# enforces all three against a snapshot of HA's validation tables.
 SENSOR_DEVICE_CLASS_UNITS: Final = {
     "temperature": {"unit_C", "unit_F"},
     "humidity": {"unit_%"},
@@ -177,22 +177,38 @@ SENSOR_DEVICE_CLASS_UNITS: Final = {
 def resolve_sensor_device_class(name: str | None, raw_unit: str | None) -> str | None:
     """Map a param name to an HA sensor device class, reconciled with the unit.
 
-    Drivers sometimes pair a mapped name with a unit HA won't accept for that
-    class (a "battery" param carrying mV). Battery voltage is remapped to the
-    voltage class; any other mismatch drops the class — better no
-    device_class than a rejected entity.
+    A class is only ever returned together with a unit HA accepts for it:
+    every mapped class is unit-requiring, so a param without a unit — or with
+    one HA rejects for that class (a "battery" param carrying mV) — gets no
+    class at all. Better no device_class than a rejected MQTT config or a
+    unit-mismatch warning. The one remap: "battery" in volt units becomes
+    the voltage class.
     """
     if not name:
         return None
     device_class = SENSOR_DEVICE_CLASS_MAPPING.get(name.lower())
     if not device_class or not raw_unit:
-        return device_class
+        return None
     allowed_units = SENSOR_DEVICE_CLASS_UNITS.get(device_class)
     if allowed_units is None or raw_unit in allowed_units:
         return device_class
     if device_class == "battery" and raw_unit in SENSOR_DEVICE_CLASS_UNITS["voltage"]:
         return "voltage"
     return None
+
+
+def resolve_sensor_state_class(name: str | None) -> str:
+    """Pick the HA state class for a numeric (non-enum) sensor param.
+
+    Deliberately name-based, independent of unit validity: a cumulative
+    counter stays cumulative even when its unit is missing or wrong for the
+    device class — publishing "measurement" there would feed a monotonic
+    counter into HA long-term statistics as a gauge.
+    """
+    named_class = SENSOR_DEVICE_CLASS_MAPPING.get(name.lower()) if name else None
+    if named_class in TOTAL_INCREASING_DEVICE_CLASSES:
+        return "total_increasing"
+    return "measurement"
 
 
 # Binary sensor device class mappings: param name -> BinarySensorDeviceClass

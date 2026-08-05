@@ -26,6 +26,7 @@ from custom_components.pushok_hub.const import (
     TOTAL_INCREASING_DEVICE_CLASSES,
     UNIT_MAPPING,
     resolve_sensor_device_class,
+    resolve_sensor_state_class,
 )
 
 # Valid SensorDeviceClass values. An invalid value in an MQTT discovery
@@ -193,8 +194,12 @@ def test_resolve_basic_mapping():
     assert resolve_sensor_device_class("no_such_param", "unit_C") is None
 
 
-def test_resolve_keeps_class_without_unit():
-    assert resolve_sensor_device_class("energy", None) == "energy"
+def test_resolve_requires_unit():
+    # Every mapped class is unit-requiring in HA: a bare device_class would
+    # be rejected in MQTT discovery and warned about in the integration, so
+    # a param without a unit gets no class at all.
+    assert resolve_sensor_device_class("energy", None) is None
+    assert resolve_sensor_device_class("temperature", None) is None
 
 
 def test_resolve_co2_is_carbon_dioxide():
@@ -208,6 +213,16 @@ def test_resolve_drops_class_on_unit_mismatch():
     # unit_V is not a real hub unit (absent from UNIT_MAPPING) and must not
     # be treated as a voltage spelling.
     assert resolve_sensor_device_class("voltage", "unit_V") is None
+
+
+def test_resolve_state_class():
+    # Name-based on purpose: cumulative counters stay total_increasing even
+    # when the unit is missing or wrong for the device class.
+    assert resolve_sensor_state_class("energy") == "total_increasing"
+    assert resolve_sensor_state_class("Energy") == "total_increasing"
+    assert resolve_sensor_state_class("temperature") == "measurement"
+    assert resolve_sensor_state_class("no_such_param") == "measurement"
+    assert resolve_sensor_state_class(None) == "measurement"
 
 
 def test_resolve_battery_voltage_remap():

@@ -29,9 +29,9 @@ from custom_components.pushok_hub.api.models import (
 from custom_components.pushok_hub.const import (
     ENTITY_TYPE_AUTOMATION,
     ENTITY_TYPE_ZIGBEE,
-    TOTAL_INCREASING_DEVICE_CLASSES,
     UNIT_MAPPING,
     resolve_sensor_device_class,
+    resolve_sensor_state_class,
 )
 
 import paho.mqtt.client as mqtt
@@ -1251,17 +1251,18 @@ class PushokMqttBridge:
                     # Labeled int params publish label strings (enum-like), so
                     # they must not carry a numeric state/device class.
                     if not param.is_enum_like:
-                        # device_class only alongside a unit: HA rejects the
-                        # whole MQTT config for unit-requiring classes without
-                        # one, and then the entity is never created.
-                        device_class = resolve_sensor_device_class(name, unit) if unit else None
+                        # The helper only yields a class together with a unit
+                        # HA accepts for it — a mismatched pair would get the
+                        # whole MQTT config rejected.
+                        device_class = resolve_sensor_device_class(name, unit)
                         if device_class:
                             config_payload["device_class"] = device_class
-                        config_payload["state_class"] = (
-                            "total_increasing"
-                            if device_class in TOTAL_INCREASING_DEVICE_CLASSES
-                            else "measurement"
-                        )
+                        # state_class only for real measurements — a
+                        # recognized class or at least a unit. Unit-less
+                        # unclassified ints (ids, codes, raw counters) must
+                        # not grow long-term statistics in HA.
+                        if device_class or unit:
+                            config_payload["state_class"] = resolve_sensor_state_class(name)
             else:
                 continue
 

@@ -16,8 +16,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import (
     DOMAIN,
     MAX_FIELD_ID,
-    TOTAL_INCREASING_DEVICE_CLASSES,
     resolve_sensor_device_class,
+    resolve_sensor_state_class,
 )
 from .coordinator import PushokHubCoordinator
 from .entity import PushokHubEntity
@@ -97,22 +97,23 @@ class PushokHubSensor(PushokHubEntity, SensorEntity):
                 self._adapter_param.view_params.get("unit")
                 if self._adapter_param else None
             )
-            device_class_str = resolve_sensor_device_class(
-                self._adapter_param.name if self._adapter_param else None,
-                raw_unit,
-            )
+            param_name = self._adapter_param.name if self._adapter_param else None
+            device_class_str = resolve_sensor_device_class(param_name, raw_unit)
             if device_class_str:
                 try:
                     self._attr_device_class = SensorDeviceClass(device_class_str)
                 except ValueError:
                     device_class_str = None
 
+            # State class only for real measurements — a recognized device
+            # class or at least a unit. Unit-less unclassified numbers (ids,
+            # codes, raw counters) must not grow long-term statistics.
             # Cumulative counters (energy) need total_increasing: measurement
-            # would require a last_reset attribute and breaks statistics.
-            if device_class_str in TOTAL_INCREASING_DEVICE_CLASSES:
-                self._attr_state_class = SensorStateClass.TOTAL_INCREASING
-            else:
-                self._attr_state_class = SensorStateClass.MEASUREMENT
+            # is not a valid state class for them and breaks statistics.
+            if device_class_str or unit:
+                self._attr_state_class = SensorStateClass(
+                    resolve_sensor_state_class(param_name)
+                )
 
             if unit:
                 self._attr_native_unit_of_measurement = unit
