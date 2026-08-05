@@ -28,5 +28,5 @@ secrets.yaml
 .claude/
 CLAUDE.md
 
-# Test files
-test_*.py
+# Ad-hoc test scripts in the repo root (versioned tests live in tests/)
+/test_*.py

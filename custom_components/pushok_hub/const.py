@@ -133,7 +133,7 @@ SENSOR_DEVICE_CLASS_MAPPING: Final = {
     "energy": "energy",
     "illuminance": "illuminance",
     "lux": "illuminance",
-    "co2": "co2",
+    "co2": "carbon_dioxide",
     "pm25": "pm25",
     "pm10": "pm10",
     "voc": "volatile_organic_compounds",
@@ -150,18 +150,21 @@ TOTAL_INCREASING_DEVICE_CLASSES: Final = {"energy"}
 # Raw adapter units HA accepts for each sensor device class. An MQTT
 # discovery config whose unit_of_measurement is invalid for its device_class
 # is rejected wholesale (the entity is never created), so a class is only
-# published when the unit fits. A class missing here accepts any unit.
+# published when the unit fits. Every class used in the mapping above must
+# have an entry here, every unit must exist in UNIT_MAPPING, and every pair
+# must be valid per HA's own rules — tests/test_device_classes.py enforces
+# all three against a snapshot of HA's validation tables.
 SENSOR_DEVICE_CLASS_UNITS: Final = {
     "temperature": {"unit_C", "unit_F"},
     "humidity": {"unit_%"},
     "pressure": {"unit_Pa", "unit_hPa", "unit_kPa", "unit_bar", "unit_mbar"},
     "battery": {"unit_%"},
-    "voltage": {"unit_voltage", "unit_V", "unit_mV", "unit_kV"},
+    "voltage": {"unit_voltage", "unit_mV", "unit_kV"},
     "current": {"unit_A", "unit_mA"},
     "power": {"unit_power", "unit_kW"},
     "energy": {"unit_energy"},
     "illuminance": {"unit_lux"},
-    "co2": {"unit_ppm"},
+    "carbon_dioxide": {"unit_ppm"},
     "pm25": {"unit_ug_m3", "unit_ugm3"},
     "pm10": {"unit_ug_m3", "unit_ugm3"},
     "volatile_organic_compounds": {"unit_ug_m3", "unit_ugm3"},
