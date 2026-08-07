@@ -7,7 +7,12 @@ from typing import Any
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api.models import AdapterParam, DeviceAdapter, DeviceDescription
+from .api.models import (
+    AdapterParam,
+    DeviceAdapter,
+    DeviceDescription,
+    apply_conversion,
+)
 from .const import DOMAIN, UNIT_MAPPING
 from .coordinator import PushokHubCoordinator, registry_identifier
 
@@ -177,42 +182,8 @@ class PushokHubEntity(CoordinatorEntity[PushokHubCoordinator]):
         return self._apply_conversion(value, inversion)
 
     def _apply_conversion(self, value: Any, rules: list) -> Any:
-        """Apply conversion rules to a value.
-
-        Conversion rules are in RPN (Reverse Polish Notation) format:
-        ["self", 10.0, "/"] means: value / 10.0
-        ["self", 100.0, "*"] means: value * 100.0
-
-        Args:
-            value: Input value
-            rules: Conversion rules list
-
-        Returns:
-            Converted value
-        """
-        if not rules:
-            return value
-
-        stack = []
-        for item in rules:
-            if item == "self":
-                stack.append(float(value))
-            elif isinstance(item, (int, float)):
-                stack.append(float(item))
-            elif item == "+":
-                b, a = stack.pop(), stack.pop()
-                stack.append(a + b)
-            elif item == "-":
-                b, a = stack.pop(), stack.pop()
-                stack.append(a - b)
-            elif item == "*":
-                b, a = stack.pop(), stack.pop()
-                stack.append(a * b)
-            elif item == "/":
-                b, a = stack.pop(), stack.pop()
-                stack.append(a / b if b != 0 else 0)
-
-        return stack[0] if stack else value
+        """Apply an adapter RPN formula — see api.models.apply_conversion."""
+        return apply_conversion(value, rules)
 
     @property
     def _state_value(self):

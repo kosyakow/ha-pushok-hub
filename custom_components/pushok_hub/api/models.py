@@ -2,8 +2,70 @@
 
 from __future__ import annotations
 
+import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def apply_conversion(value: Any, rules: list | None) -> Any:
+    """Evaluate an adapter convert/inversion formula.
+
+    Formulas are RPN token lists: "self" pushes the input value, numbers push
+    themselves, operators pop their operands and push the result:
+      +  -  *  /   binary (division by zero yields 0, mirroring the hub)
+      ^            binary power — [10, "self", "^"] is 10 ** value
+      log10        unary — non-positive operand yields 0
+
+    Example: lux = 10 ** ((raw - 1) / 10000) for a ZCL illuminance sensor is
+    [10, "self", 1, "-", 10000, "/", "^"].
+
+    A formula this evaluator cannot fully apply (unknown token, operand
+    underflow, non-numeric input, leftover stack) logs a warning and returns
+    the value unchanged: a raw reading is recoverable downstream, a silently
+    wrong constant is not.
+    """
+    if not rules:
+        return value
+
+    try:
+        stack: list[float] = []
+        for item in rules:
+            if item == "self":
+                stack.append(float(value))
+            elif isinstance(item, (int, float)):
+                stack.append(float(item))
+            elif item in ("+", "-", "*", "/", "^"):
+                b, a = stack.pop(), stack.pop()
+                if item == "+":
+                    stack.append(a + b)
+                elif item == "-":
+                    stack.append(a - b)
+                elif item == "*":
+                    stack.append(a * b)
+                elif item == "/":
+                    stack.append(a / b if b != 0 else 0.0)
+                else:
+                    stack.append(a**b)
+            elif item == "log10":
+                a = stack.pop()
+                stack.append(math.log10(a) if a > 0 else 0.0)
+            else:
+                raise ValueError(f"unknown token {item!r}")
+        if len(stack) != 1:
+            raise ValueError(f"{len(stack)} values left on stack")
+        result = stack[0]
+        if not isinstance(result, float):  # complex from ** with negative base
+            raise ValueError(f"non-numeric result {result!r}")
+    except (TypeError, ValueError, IndexError, OverflowError) as err:
+        _LOGGER.warning("Cannot apply conversion %s to %r: %s", rules, value, err)
+        return value
+
+    if result.is_integer():
+        return int(result)
+    return result
 
 
 @dataclass

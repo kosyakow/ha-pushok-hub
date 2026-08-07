@@ -25,6 +25,7 @@ from custom_components.pushok_hub.api.models import (
     DeviceDescription,
     DeviceState,
     PropertyValue,
+    apply_conversion,
 )
 from custom_components.pushok_hub.const import (
     ENTITY_TYPE_AUTOMATION,
@@ -954,40 +955,8 @@ class PushokMqttBridge:
         return converted
 
     def _apply_conversion(self, value: Any, formula: list) -> Any:
-        """Apply conversion formula to value.
-
-        Formula format: ['self', operand, operation]
-        - 'self' represents the value
-        - operand is a number
-        - operation is '+', '-', '*', '/', '^', 'log10'
-        """
-        import math
-
-        if not formula or len(formula) < 3:
-            return value
-
-        try:
-            # formula is like ['self', 100, '*'] or ['self', 100.0, '/']
-            operand = float(formula[1])
-            operation = formula[2]
-
-            if operation == '+':
-                return value + operand
-            elif operation == '-':
-                return value - operand
-            elif operation == '*':
-                result = value * operand
-                return int(result) if isinstance(operand, int) else result
-            elif operation == '/':
-                return value / operand
-            elif operation == '^':
-                return value ** operand
-            elif operation == 'log10':
-                return math.log10(value) if value > 0 else 0
-        except (TypeError, ValueError, IndexError) as e:
-            _LOGGER.warning("Failed to apply conversion %s to %s: %s", formula, value, e)
-
-        return value
+        """Apply an adapter RPN formula — see api.models.apply_conversion."""
+        return apply_conversion(value, formula)
 
     def _has_writable_params(self, adapter: DeviceAdapter, data: dict[str, Any]) -> bool:
         """Check if data contains any writable parameters."""
