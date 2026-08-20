@@ -77,44 +77,74 @@ STORAGE_KEY_PRIVATE_KEY: Final = "ec_private_key"
 STORAGE_KEY_USER_ID: Final = "user_id"
 
 # Unit mappings: adapter viewParams.unit -> HA native_unit_of_measurement
+#
+# Keys mirror the canonical unit dictionary of zigbee-remote-app
+# (app/pushok_iot/assets/locales/drivers_locale_en.json) — the hub only ever
+# sends keys from that dictionary. Keep the two in sync when units are added
+# there. Values follow HA-native spellings where HA is picky about them
+# ("lx" not "lux", "d" not "days", "L" not "l", "var" not "VAr"); the rest
+# match the app's English display values.
 UNIT_MAPPING: Final = {
-    "unit_C": "°C",
-    "unit_F": "°F",
     "unit_%": "%",
-    "unit_voltage": "V",
+    "unit_A": "A",
+    "unit_bar": "bar",
+    "unit_C": "°C",
+    "unit_cm": "cm",
+    "unit_days": "d",
+    "unit_dB": "dB",
+    "unit_dbm": "dBm",
+    "unit_deg": "°",
+    "unit_ds": "1/10 s",
+    "unit_energy": "kWh",
+    "unit_hours": "h",
+    "unit_hpa": "hPa",
+    "unit_Hz": "Hz",
+    "unit_kb": "kB",
+    "unit_kPa": "kPa",
+    "unit_kW": "kW",
+    "unit_l": "L",
+    "unit_lel": "LEL %",
+    "unit_liter_in_minute": "L/min",
+    "unit_lux": "lx",
+    "unit_m": "m",
+    "unit_m_s": "m/s",
+    "unit_mA": "mA",
+    "unit_mgm3": "mg/m³",
+    "unit_min": "min",
+    "unit_mm": "mm",
+    "unit_mmhg": "mmHg",
+    "unit_ms": "ms",
     "unit_mV": "mV",
     "unit_power": "W",
-    "unit_mA": "mA",
-    "unit_A": "A",
-    "unit_energy": "kWh",
-    "unit_lux": "lx",
-    "unit_ppm": "ppm",
     "unit_ppb": "ppb",
-    "unit_hPa": "hPa",
-    "unit_kPa": "kPa",
-    "unit_mPa": "mPa",
-    "unit_Pa": "Pa",
-    "unit_bar": "bar",
-    "unit_mbar": "mbar",
-    "unit_nm": "nm",
-    "unit_um": "µm",
-    "unit_mm": "mm",
-    "unit_cm": "cm",
-    "unit_m": "m",
-    "unit_km": "km",
+    "unit_ppm": "ppm",
+    "unit_psi": "psi",
     "unit_s": "s",
-    "unit_min": "min",
-    "unit_Hz": "Hz",
-    "unit_kHz": "kHz",
-    "unit_MHz": "MHz",
-    "unit_dB": "dB",
-    "unit_L": "L",
-    "unit_mL": "mL",
-    "unit_m3": "m³",
     "unit_ug_m3": "µg/m³",
+    "unit_um": "µm",
+    "unit_uS_cm": "µS/cm",
+    "unit_VAr": "var",
+    "unit_voc": "VOC",
+    "unit_voltage": "V",
+    # Legacy aliases: keys dropped from the app dictionary by the
+    # duplicate-long-forms cleanup (zigbee-remote-app 470e03c0). Hubs keep
+    # sending them until their bundled drivers are updated, so map them to
+    # the same values as their canonical replacements. Safe to remove once
+    # deployed hubs no longer ship pre-cleanup drivers.
+    "unit_seconds": "s",
+    "unit_minutes": "min",
+    "unit_hour": "h",
+    "unit_h": "h",
+    "unit_degrees": "°",
+    "unit_meter": "m",
+    "unit_meters": "m",
+    "unit_liter": "L",
+    "unit_watt": "W",
+    "unit_kpa": "kPa",
+    "unit_us_cm": "µS/cm",
     "unit_ugm3": "µg/m³",
-    "unit_kV": "kV",
-    "unit_kW": "kW",
+    "unit_db_m": "dBm",
+    "kW": "kW",  # one pre-cleanup driver shipped the unit without the unit_ prefix
 }
 
 # Sensor device class mappings: param name -> SensorDeviceClass
@@ -151,30 +181,29 @@ TOTAL_INCREASING_DEVICE_CLASSES: Final = {"energy"}
 # discovery config whose unit_of_measurement is invalid for its device_class
 # is rejected wholesale (the entity is never created), so a class is only
 # published when a unit is present AND fits. Every class used in the mapping
-# above must have an entry here, every unit must exist in UNIT_MAPPING, and
-# every pair must be valid on the OLDEST supported HA core (hacs.json
+# above must have an entry here, every unit must exist in UNIT_MAPPING
+# (legacy aliases included — hubs with pre-cleanup drivers still send them),
+# and every pair must be valid on the OLDEST supported HA core (hacs.json
 # "homeassistant", currently 2024.1.0) — newer cores only ever widen these
-# sets. That is why mPa (pressure) and kV (voltage) are absent: HA gained
-# them only in 2025.x, and publishing them to an older core would reject the
-# whole config. Params with such units still get a state_class via
+# sets. Params whose unit fits no class here still get a state_class via
 # UNIT_MAPPING, just no device_class.
 SENSOR_DEVICE_CLASS_UNITS: Final = {
-    "temperature": {"unit_C", "unit_F"},
+    "temperature": {"unit_C"},
     "humidity": {"unit_%"},
-    "pressure": {"unit_Pa", "unit_hPa", "unit_kPa", "unit_bar", "unit_mbar"},
+    "pressure": {"unit_hpa", "unit_kPa", "unit_kpa", "unit_bar", "unit_mmhg", "unit_psi"},
     "battery": {"unit_%"},
     "voltage": {"unit_voltage", "unit_mV"},
     "current": {"unit_A", "unit_mA"},
-    "power": {"unit_power", "unit_kW"},
+    "power": {"unit_power", "unit_watt", "unit_kW", "kW"},
     "energy": {"unit_energy"},
     "illuminance": {"unit_lux"},
     "carbon_dioxide": {"unit_ppm"},
     "pm25": {"unit_ug_m3", "unit_ugm3"},
     "pm10": {"unit_ug_m3", "unit_ugm3"},
     "volatile_organic_compounds": {"unit_ug_m3", "unit_ugm3"},
-    "frequency": {"unit_Hz", "unit_kHz", "unit_MHz"},
-    "signal_strength": {"unit_dB"},
-    "distance": {"unit_mm", "unit_cm", "unit_m", "unit_km"},
+    "frequency": {"unit_Hz"},
+    "signal_strength": {"unit_dB", "unit_dbm", "unit_db_m"},
+    "distance": {"unit_mm", "unit_cm", "unit_m", "unit_meter", "unit_meters"},
 }
 
 
