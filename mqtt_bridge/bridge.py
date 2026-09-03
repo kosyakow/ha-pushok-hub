@@ -30,6 +30,7 @@ from custom_components.pushok_hub.const import (
     ENTITY_TYPE_AUTOMATION,
     ENTITY_TYPE_ZIGBEE,
     UNIT_MAPPING,
+    resolve_sensor_classes,
 )
 
 import paho.mqtt.client as mqtt
@@ -945,8 +946,18 @@ class PushokMqttBridge:
         if param.convert and "conversion" in param.convert:
             converted = self._apply_conversion(converted, param.convert["conversion"])
 
-        # Convert raw value to label
-        if param.labels:
+        # Convert raw value to label — only for params whose discovery config
+        # expects label payloads: bools (state_on/off), writable dropdowns
+        # (select options) and read-only enum-like sensors. Numeric params
+        # (float or with a unit) must stay numeric: their discovery carries
+        # state_class, and a label string there breaks HA statistics. Writable
+        # non-dropdown ints are discovered as number entities, which can't
+        # parse label strings either.
+        if param.labels and (
+            param.param_type == "bool"
+            or (param.is_writable and param.view_params.get("type") == "dropdown")
+            or (not param.is_writable and param.is_enum_like)
+        ):
             for label, label_value in param.labels.items():
                 if label_value == converted:
                     return label
@@ -1238,6 +1249,16 @@ class PushokMqttBridge:
                     unit = param.view_params.get("unit")
                     if unit:
                         config_payload["unit_of_measurement"] = UNIT_MAPPING.get(unit, unit)
+                    # Labeled int params publish label strings (enum-like), so
+                    # they must not carry a numeric state/device class. For
+                    # everything else the helper yields a pair that is safe to
+                    # publish as-is — see resolve_sensor_classes.
+                    if not param.is_enum_like:
+                        device_class, state_class = resolve_sensor_classes(name, unit)
+                        if device_class:
+                            config_payload["device_class"] = device_class
+                        if state_class:
+                            config_payload["state_class"] = state_class
             else:
                 continue
 
