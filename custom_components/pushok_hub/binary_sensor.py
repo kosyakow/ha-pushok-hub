@@ -97,13 +97,23 @@ class PushokHubBinarySensor(PushokHubEntity, BinarySensorEntity):
                 elif "water" in name or "leak" in name:
                     self._attr_icon = "mdi:water-alert"
 
-        # HA opening-type sensors are on when open. Params whose adapter
-        # labels true as "closed" (dry contacts) report the opposite.
-        self._invert = (
-            getattr(self, "_attr_device_class", None) in OPENING_DEVICE_CLASSES
-            and self._adapter_param is not None
-            and self._adapter_param.true_means_closed
+        self._true_means_closed = (
+            self._adapter_param is not None and self._adapter_param.true_means_closed
         )
+
+    @property
+    def _invert(self) -> bool:
+        """Whether the raw value has to be inverted for HA.
+
+        HA opening-type sensors are on when open, while dry contacts label
+        true as "closed". The class the user picked in "Show as" wins over the
+        mapped one: for a contact shown as moisture the raw value stays as is.
+        """
+        if not self._true_means_closed:
+            return False
+        entry = self.registry_entry
+        device_class = (entry and entry.device_class) or self.device_class
+        return device_class in OPENING_DEVICE_CLASSES
 
     @property
     def is_on(self) -> bool | None:
@@ -111,4 +121,4 @@ class PushokHubBinarySensor(PushokHubEntity, BinarySensorEntity):
         value = self._state_value
         if value is None:
             return None
-        return not bool(value) if self._invert else bool(value)
+        return bool(value) != self._invert

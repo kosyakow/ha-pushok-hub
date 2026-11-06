@@ -1164,13 +1164,10 @@ class PushokMqttBridge:
 
             if param.param_type == "bool":
                 if param.labels:
-                    label_on = "on"
-                    label_off = "off"
-                    for label, val in param.labels.items():
-                        if val is True or val == 1:
-                            label_on = label
-                        elif val is False or val == 0:
-                            label_off = label
+                    # Same first-match rule as _convert_value_from_hub, which
+                    # publishes the state these payloads are compared with
+                    label_on = param.label_for(True) or "on"
+                    label_off = param.label_for(False) or "off"
                 else:
                     # Label-less bool is published as "true"/"false" by
                     # _publish_device_state, so state must match that.

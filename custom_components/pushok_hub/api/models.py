@@ -9,6 +9,9 @@ from typing import Any
 
 _LOGGER = logging.getLogger(__name__)
 
+# Adapter labels meaning "closed" for a contact (see true_means_closed)
+CLOSED_LABELS = frozenset({"closed", "close"})
+
 
 def apply_conversion(value: Any, rules: list | None) -> Any:
     """Evaluate an adapter convert/inversion formula.
@@ -298,7 +301,7 @@ class AdapterParam:
             description=data.get("description"),
             min_value=data.get("min"),
             max_value=data.get("max"),
-            labels=data.get("labels", {}),
+            labels=data.get("labels") or {},
             view_params=view_params,
             convert=data.get("convert"),
             ya=data.get("ya"),
@@ -328,9 +331,20 @@ class AdapterParam:
             and not self.view_params.get("unit")
         )
 
+    def label_for(self, value: Any) -> str | None:
+        """Return the adapter label for a raw value, or None.
+
+        The first matching label wins. Bool params may label their values
+        with true/false or with 1/0; both match (True == 1, False == 0).
+        """
+        for label, label_value in (self.labels or {}).items():
+            if label_value == value:
+                return label
+        return None
+
     @property
     def true_means_closed(self) -> bool:
-        """True when the adapter labels a true value of this bool as "closed".
+        """True when the adapter labels a true value of this bool as closed.
 
         Contact params are not consistent across drivers: door sensors label
         true as "on"/"opened", while dry-contact inputs (POK003, POK010,
@@ -339,10 +353,8 @@ class AdapterParam:
         """
         if self.param_type != "bool":
             return False
-        for label, value in self.labels.items():
-            if value is True:
-                return label.lower() == "closed"
-        return False
+        label = self.label_for(True)
+        return label is not None and label.lower() in CLOSED_LABELS
 
 
 @dataclass
