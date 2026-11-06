@@ -12,7 +12,12 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, BINARY_SENSOR_DEVICE_CLASS_MAPPING, MAX_FIELD_ID
+from .const import (
+    DOMAIN,
+    BINARY_SENSOR_DEVICE_CLASS_MAPPING,
+    MAX_FIELD_ID,
+    OPENING_DEVICE_CLASSES,
+)
 from .coordinator import PushokHubCoordinator
 from .entity import PushokHubEntity
 
@@ -92,10 +97,28 @@ class PushokHubBinarySensor(PushokHubEntity, BinarySensorEntity):
                 elif "water" in name or "leak" in name:
                     self._attr_icon = "mdi:water-alert"
 
+        self._true_means_closed = (
+            self._adapter_param is not None and self._adapter_param.true_means_closed
+        )
+
+    @property
+    def _invert(self) -> bool:
+        """Whether the raw value has to be inverted for HA.
+
+        HA opening-type sensors are on when open, while dry contacts label
+        true as "closed". The class the user picked in "Show as" wins over the
+        mapped one: for a contact shown as moisture the raw value stays as is.
+        """
+        if not self._true_means_closed:
+            return False
+        entry = self.registry_entry
+        device_class = (entry and entry.device_class) or self.device_class
+        return device_class in OPENING_DEVICE_CLASSES
+
     @property
     def is_on(self) -> bool | None:
         """Return true if the binary sensor is on."""
         value = self._state_value
         if value is None:
             return None
-        return bool(value)
+        return bool(value) != self._invert
