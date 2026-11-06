@@ -328,6 +328,22 @@ class AdapterParam:
             and not self.view_params.get("unit")
         )
 
+    @property
+    def true_means_closed(self) -> bool:
+        """True when the adapter labels a true value of this bool as "closed".
+
+        Contact params are not consistent across drivers: door sensors label
+        true as "on"/"opened", while dry-contact inputs (POK003, POK010,
+        POK019, Aqara vibration sensor in door mode) follow the zigbee2mqtt
+        `contact` meaning, where true is "closed".
+        """
+        if self.param_type != "bool":
+            return False
+        for label, value in self.labels.items():
+            if value is True:
+                return label.lower() == "closed"
+        return False
+
 
 @dataclass
 class DeviceAdapter:

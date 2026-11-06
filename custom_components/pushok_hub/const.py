@@ -281,6 +281,9 @@ BINARY_SENSOR_DEVICE_CLASS_MAPPING: Final = {
     "problem": "problem",
 }
 
+# Binary sensor device classes for which HA shows "on" as open
+OPENING_DEVICE_CLASSES: Final = {"opening", "door", "window", "garage_door"}
+
 # Switch device class mappings: param name -> SwitchDeviceClass
 SWITCH_DEVICE_CLASS_MAPPING: Final = {
     "outlet": "outlet",
